@@ -31,15 +31,23 @@
 #include "haloExchange.h"
 
 #include <assert.h>
+#include <stdio.h>
 
 #include "CoMDTypes.h"
 #include "decomposition.h"
 #include "parallel.h"
+#include "defines.h"
 #include "linkCells.h"
+#include "hashTable.h"
+#include "neighborList.h"
 #include "eam.h"
 #include "memUtils.h"
 #include "performanceTimers.h"
 
+EXTERN_C int compactCellsGpu(char* work_d, int nCells, int *d_cellList, SimGpu sim_gpu, int* d_cellOffsets, int * d_workScan, real3_old shift, cudaStream_t stream);
+EXTERN_C void unloadAtomsBufferToGpu(char *buf, int nBuf, SimFlat *s, char *gpu_buf, cudaStream_t stream);
+EXTERN_C void loadForceBufferFromGpu(char *buf, int *nbuf, int nCells, int *cellList, int *natoms_buf, int *partial_sums, SimFlat *s, char *gpu_buf, cudaStream_t stream);
+EXTERN_C void unloadForceBufferToGpu(char *buf, int nBuf, int nCells, int *cellList, int *natoms_buf, int *partial_sums, SimFlat *s, char *gpu_buf, cudaStream_t stream);
 #define MAX(A,B) ((A) > (B) ? (A) : (B))
 
 /// Don't change the order of the faces in this enum.
@@ -49,46 +57,6 @@ enum HaloFaceOrder {HALO_X_MINUS, HALO_X_PLUS,
 
 /// Don't change the order of the axes in this enum.
 enum HaloAxisOrder {HALO_X_AXIS, HALO_Y_AXIS, HALO_Z_AXIS};
-
-/// Extra data members that are needed for the exchange of atom data.
-/// For an atom exchange, the HaloExchangeSt::parms will point to a
-/// structure of this type.
-typedef struct AtomExchangeParmsSt
-{
-   int nCells[6];        //!< Number of cells in cellList for each face.
-   int* cellList[6];     //!< List of link cells from which to load data for each face.
-   real_t* pbcFactor[6]; //!< Whether this face is a periodic boundary.
-}
-AtomExchangeParms;
-
-/// Extra data members that are needed for the exchange of force data.
-/// For an force exchange, the HaloExchangeSt::parms will point to a
-/// structure of this type.
-typedef struct ForceExchangeParmsSt
-{
-   int nCells[6];     //!< Number of cells to send/recv for each face.
-   int* sendCells[6]; //!< List of link cells to send for each face.
-   int* recvCells[6]; //!< List of link cells to recv for each face.
-}
-ForceExchangeParms;
-
-/// A structure to package data for a single atom to pack into a
-/// send/recv buffer.  Also used for sorting atoms within link cells.
-typedef struct AtomMsgSt
-{
-   int gid;
-   int type;
-   real_t rx, ry, rz;
-   real_t px, py, pz;
-}
-AtomMsg;
-
-/// Package data for the force exchange.
-typedef struct ForceMsgSt
-{
-   real_t dfEmbed;
-}
-ForceMsg;
 
 static HaloExchange* initHaloExchange(Domain* domain);
 static void exchangeData(HaloExchange* haloExchange, void* data, int iAxis);
@@ -101,7 +69,9 @@ static void destroyAtomsExchange(void* vparms);
 static int* mkForceSendCellList(LinkCell* boxes, int face, int nCells);
 static int* mkForceRecvCellList(LinkCell* boxes, int face, int nCells);
 static int loadForceBuffer(void* vparms, void* data, int face, char* charBuf);
+static int loadForceBufferCpu(void* vparms, void* data, int face, char* charBuf);
 static void unloadForceBuffer(void* vparms, void* data, int face, int bufSize, char* charBuf);
+static void unloadForceBufferCpu(void* vparms, void* data, int face, int bufSize, char* charBuf);
 static void destroyForceExchange(void* vparms);
 static int sortAtomsById(const void* a, const void* b);
 
@@ -152,11 +122,24 @@ HaloExchange* initAtomHaloExchange(Domain* domain, LinkCell* boxes)
    maxSize = MAX(size1, size2);
    hh->bufCapacity = maxSize*2*MAXATOMS*sizeof(AtomMsg);
    
+   hh->sendBufM = (char*)comdMalloc(hh->bufCapacity);
+   hh->sendBufP = (char*)comdMalloc(hh->bufCapacity);
+   hh->recvBufP = (char*)comdMalloc(hh->bufCapacity);
+   hh->recvBufM = (char*)comdMalloc(hh->bufCapacity);
+
+   // pin memory
+   cudaHostRegister(hh->sendBufM, hh->bufCapacity, 0);
+   cudaHostRegister(hh->sendBufP, hh->bufCapacity, 0);
+   cudaHostRegister(hh->recvBufP, hh->bufCapacity, 0);
+   cudaHostRegister(hh->recvBufM, hh->bufCapacity, 0);
+
    hh->loadBuffer = loadAtomsBuffer;
    hh->unloadBuffer = unloadAtomsBuffer;
    hh->destroy = destroyAtomsExchange;
 
-   AtomExchangeParms* parms = comdMalloc(sizeof(AtomExchangeParms));
+   hh->hashTable = initHashTable((boxes->nTotalBoxes - boxes->nLocalBoxes) * MAXATOMS * 2);
+
+   AtomExchangeParms* parms = (AtomExchangeParms*)comdMalloc(sizeof(AtomExchangeParms));
 
    parms->nCells[HALO_X_MINUS] = 2*(boxes->gridSize[1]+2)*(boxes->gridSize[2]+2);
    parms->nCells[HALO_Y_MINUS] = 2*(boxes->gridSize[0]+2)*(boxes->gridSize[2]+2);
@@ -165,12 +148,28 @@ HaloExchange* initAtomHaloExchange(Domain* domain, LinkCell* boxes)
    parms->nCells[HALO_Y_PLUS]  = parms->nCells[HALO_Y_MINUS];
    parms->nCells[HALO_Z_PLUS]  = parms->nCells[HALO_Z_MINUS];
 
-   for (int ii=0; ii<6; ++ii)
-      parms->cellList[ii] = mkAtomCellList(boxes, ii, parms->nCells[ii]);
+   for (int ii=0; ii<6; ++ii) {
+      parms->cellList[ii] = mkAtomCellList(boxes, (enum HaloFaceOrder)ii, parms->nCells[ii]);
+	  
+      // copy cell list to gpu
+      cudaMalloc((void**)&parms->cellListGpu[ii], parms->nCells[ii] * sizeof(int));
+      cudaMemcpy(parms->cellListGpu[ii], parms->cellList[ii], parms->nCells[ii] * sizeof(int), cudaMemcpyHostToDevice);
+  
+   }
+   // allocate scan buf
+   int size = boxes->nLocalBoxes+1;
+   if (size % 256 != 0) size = ((size + 255)/256)*256;
+
+   int partial_size = size/256 + 1;
+   if (partial_size % 256 != 0) partial_size = ((partial_size + 255)/256)*256;
+
+   cudaMalloc((void**)&parms->d_natoms_buf, size * sizeof(int));
+   parms->h_natoms_buf = (int*) malloc( size * sizeof(int));
+   cudaMalloc((void**)&parms->d_partial_sums, partial_size * sizeof(int));
 
    for (int ii=0; ii<6; ++ii)
    {
-      parms->pbcFactor[ii] = comdMalloc(3*sizeof(real_t));
+      parms->pbcFactor[ii] = (real_t*)comdMalloc(3*sizeof(real_t));
       for (int jj=0; jj<3; ++jj)
          parms->pbcFactor[ii][jj] = 0.0;
    }
@@ -183,6 +182,7 @@ HaloExchange* initAtomHaloExchange(Domain* domain, LinkCell* boxes)
    if (procCoord[HALO_Z_AXIS] == 0)                       parms->pbcFactor[HALO_Z_MINUS][HALO_Z_AXIS] = +1.0;
    if (procCoord[HALO_Z_AXIS] == procGrid[HALO_Z_AXIS]-1) parms->pbcFactor[HALO_Z_PLUS][HALO_Z_AXIS]  = -1.0;
    
+   hh->type = 0;
    hh->parms = parms;
    return hh;
 }
@@ -202,12 +202,17 @@ HaloExchange* initAtomHaloExchange(Domain* domain, LinkCell* boxes)
 ///
 /// \see eam.c for an explanation of the requirement to exchange
 /// force data.
-HaloExchange* initForceHaloExchange(Domain* domain, LinkCell* boxes)
+HaloExchange* initForceHaloExchange(Domain* domain, LinkCell* boxes, int useGPU)
 {
    HaloExchange* hh = initHaloExchange(domain);
 
-   hh->loadBuffer = loadForceBuffer;
-   hh->unloadBuffer = unloadForceBuffer;
+   if(useGPU){
+      hh->loadBuffer = loadForceBuffer;
+      hh->unloadBuffer = unloadForceBuffer;
+   }else{
+      hh->loadBuffer = loadForceBufferCpu;
+      hh->unloadBuffer = unloadForceBufferCpu;
+   }
    hh->destroy = destroyForceExchange;
 
    int size0 = (boxes->gridSize[1])*(boxes->gridSize[2]);
@@ -217,7 +222,18 @@ HaloExchange* initForceHaloExchange(Domain* domain, LinkCell* boxes)
    maxSize = MAX(size1, size2);
    hh->bufCapacity = (maxSize)*MAXATOMS*sizeof(ForceMsg);
 
-   ForceExchangeParms* parms = comdMalloc(sizeof(ForceExchangeParms));
+   hh->sendBufM = (char*)comdMalloc(hh->bufCapacity);
+   hh->sendBufP = (char*)comdMalloc(hh->bufCapacity);
+   hh->recvBufP = (char*)comdMalloc(hh->bufCapacity);
+   hh->recvBufM = (char*)comdMalloc(hh->bufCapacity);
+
+   // pin memory
+   cudaHostRegister(hh->sendBufM, hh->bufCapacity, 0);
+   cudaHostRegister(hh->sendBufP, hh->bufCapacity, 0);
+   cudaHostRegister(hh->recvBufP, hh->bufCapacity, 0);
+   cudaHostRegister(hh->recvBufM, hh->bufCapacity, 0);
+
+   ForceExchangeParms* parms = (ForceExchangeParms*)comdMalloc(sizeof(ForceExchangeParms));
 
    parms->nCells[HALO_X_MINUS] = (boxes->gridSize[1]  )*(boxes->gridSize[2]  );
    parms->nCells[HALO_Y_MINUS] = (boxes->gridSize[0]+2)*(boxes->gridSize[2]  );
@@ -230,8 +246,22 @@ HaloExchange* initForceHaloExchange(Domain* domain, LinkCell* boxes)
    {
       parms->sendCells[ii] = mkForceSendCellList(boxes, ii, parms->nCells[ii]);
       parms->recvCells[ii] = mkForceRecvCellList(boxes, ii, parms->nCells[ii]);
+
+      // copy cell list to gpu
+      cudaMalloc((void**)&parms->sendCellsGpu[ii], parms->nCells[ii] * sizeof(int));
+      cudaMalloc((void**)&parms->recvCellsGpu[ii], parms->nCells[ii] * sizeof(int));
+      cudaMemcpy(parms->sendCellsGpu[ii], parms->sendCells[ii], parms->nCells[ii] * sizeof(int), cudaMemcpyHostToDevice);
+      cudaMemcpy(parms->recvCellsGpu[ii], parms->recvCells[ii], parms->nCells[ii] * sizeof(int), cudaMemcpyHostToDevice);
+
+      // allocate temp buf
+      int size = parms->nCells[ii]+1;
+      if (size % 256 != 0) size = ((size + 255)/256)*256;
+      cudaMalloc((void**)&parms->natoms_buf[ii], size * sizeof(int));
+      cudaMalloc((void**)&parms->partial_sums[ii], (size/256 + 1) * sizeof(int));
    }
    
+   hh->hashTable = NULL;
+   hh->type = 1;
    hh->parms = parms;
    return hh;
 }
@@ -239,6 +269,13 @@ HaloExchange* initForceHaloExchange(Domain* domain, LinkCell* boxes)
 void destroyHaloExchange(HaloExchange** haloExchange)
 {
    (*haloExchange)->destroy((*haloExchange)->parms);
+   if((*haloExchange)->hashTable);
+     destroyHashTable(&((*haloExchange)->hashTable));
+   free((*haloExchange)->sendBufM);
+   free((*haloExchange)->sendBufP);
+   free((*haloExchange)->recvBufP);
+   free((*haloExchange)->recvBufM);
+
    free(*haloExchange);
    *haloExchange = NULL;
 }
@@ -252,7 +289,7 @@ void haloExchange(HaloExchange* haloExchange, void* data)
 /// Base class constructor.
 HaloExchange* initHaloExchange(Domain* domain)
 {
-   HaloExchange* hh = comdMalloc(sizeof(HaloExchange));
+   HaloExchange* hh = (HaloExchange*)comdMalloc(sizeof(HaloExchange));
 
    // Rank of neighbor task for each face.
    hh->nbrRank[HALO_X_MINUS] = processorNum(domain, -1,  0,  0);
@@ -276,13 +313,13 @@ HaloExchange* initHaloExchange(Domain* domain)
 ///                       unload functions
 void exchangeData(HaloExchange* haloExchange, void* data, int iAxis)
 {
-   enum HaloFaceOrder faceM = 2*iAxis;
-   enum HaloFaceOrder faceP = faceM+1;
+   enum HaloFaceOrder faceM = (enum HaloFaceOrder)(2*iAxis);
+   enum HaloFaceOrder faceP = (enum HaloFaceOrder)(faceM+1);
 
-   char* sendBufM = comdMalloc(haloExchange->bufCapacity);
-   char* sendBufP = comdMalloc(haloExchange->bufCapacity);
-   char* recvBufM = comdMalloc(haloExchange->bufCapacity);
-   char* recvBufP = comdMalloc(haloExchange->bufCapacity);
+   char* sendBufM = haloExchange->sendBufM;
+   char* sendBufP = haloExchange->sendBufP;
+   char* recvBufP = haloExchange->recvBufP;
+   char* recvBufM = haloExchange->recvBufM;
 
    int nSendM = haloExchange->loadBuffer(haloExchange->parms, data, faceM, sendBufM);
    int nSendP = haloExchange->loadBuffer(haloExchange->parms, data, faceP, sendBufP);
@@ -299,10 +336,6 @@ void exchangeData(HaloExchange* haloExchange, void* data, int iAxis)
    
    haloExchange->unloadBuffer(haloExchange->parms, data, faceM, nRecvM, recvBufM);
    haloExchange->unloadBuffer(haloExchange->parms, data, faceP, nRecvP, recvBufP);
-   comdFree(recvBufP);
-   comdFree(recvBufM);
-   comdFree(sendBufP);
-   comdFree(sendBufM);
 }
 
 /// Make a list of link cells that need to be sent across the specified
@@ -326,7 +359,7 @@ void exchangeData(HaloExchange* haloExchange, void* data, int iAxis)
 /// the list.
 int* mkAtomCellList(LinkCell* boxes, enum HaloFaceOrder iFace, const int nCells)
 {
-   int* list = comdMalloc(nCells*sizeof(int));
+   int* list = (int*)comdMalloc(nCells*sizeof(int));
    int xBegin = -1;
    int xEnd   = boxes->gridSize[0]+1;
    int yBegin = -1;
@@ -360,36 +393,51 @@ int* mkAtomCellList(LinkCell* boxes, enum HaloFaceOrder iFace, const int nCells)
 int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
 {
    AtomExchangeParms* parms = (AtomExchangeParms*) vparms;
-   SimFlat* s = (SimFlat*) data;
-   AtomMsg* buf = (AtomMsg*) charBuf;
+   SimFlat* sim = (SimFlat*) data;
    
    real_t* pbcFactor = parms->pbcFactor[face];
-   real3 shift;
-   shift[0] = pbcFactor[0] * s->domain->globalExtent[0];
-   shift[1] = pbcFactor[1] * s->domain->globalExtent[1];
-   shift[2] = pbcFactor[2] * s->domain->globalExtent[2];
+   real3_old shift;
+   shift[0] = pbcFactor[0] * sim->domain->globalExtent[0];
+   shift[1] = pbcFactor[1] * sim->domain->globalExtent[1];
+   shift[2] = pbcFactor[2] * sim->domain->globalExtent[2];
    
    int nCells = parms->nCells[face];
-   int* cellList = parms->cellList[face];
-   int nBuf = 0;
-   for (int iCell=0; iCell<nCells; ++iCell)
+
+   int nTotalAtomsCellList = 0;
+//   if(sim->method == 3 ||sim->method == 4)
+   if(sim->method == 4)
    {
-      int iBox = cellList[iCell];
-      int iOff = iBox*MAXATOMS;
-      for (int ii=iOff; ii<iOff+s->boxes->nAtoms[iBox]; ++ii)
-      {
-         buf[nBuf].gid  = s->atoms->gid[ii];
-         buf[nBuf].type = s->atoms->iSpecies[ii];
-         buf[nBuf].rx = s->atoms->r[ii][0] + shift[0];
-         buf[nBuf].ry = s->atoms->r[ii][1] + shift[1];
-         buf[nBuf].rz = s->atoms->r[ii][2] + shift[2];
-         buf[nBuf].px = s->atoms->p[ii][0];
-         buf[nBuf].py = s->atoms->p[ii][1];
-         buf[nBuf].pz = s->atoms->p[ii][2];
-         ++nBuf;
-      }
+           int* cellList = parms->cellList[face];
+
+           AtomMsg* buf = (AtomMsg*) charBuf;
+           for (int iCell=0; iCell<nCells; ++iCell)
+           {
+                   int iBox = cellList[iCell];
+                   int iOff = iBox*MAXATOMS;
+                   for (int ii=iOff; ii<iOff+sim->boxes->nAtoms[iBox]; ++ii)
+                   {
+                           buf[nTotalAtomsCellList].gid  = sim->atoms->gid[ii];
+                           buf[nTotalAtomsCellList].type = sim->atoms->iSpecies[ii];
+                           buf[nTotalAtomsCellList].rx = sim->atoms->r.x[ii] + shift[0];
+                           buf[nTotalAtomsCellList].ry = sim->atoms->r.y[ii] + shift[1];
+                           buf[nTotalAtomsCellList].rz = sim->atoms->r.z[ii] + shift[2];
+                           buf[nTotalAtomsCellList].px = sim->atoms->p.x[ii];
+                           buf[nTotalAtomsCellList].py = sim->atoms->p.y[ii];
+                           buf[nTotalAtomsCellList].pz = sim->atoms->p.z[ii];
+                           ++nTotalAtomsCellList;
+                   }
+           }
+//           printf("cpu: %d\n",nTotalAtomsCellList);
+   }else{
+           int* d_cellList = parms->cellListGpu[face];
+
+           nTotalAtomsCellList = compactCellsGpu(sim->gpu_atoms_buf, nCells, d_cellList, sim->gpu,  parms->d_natoms_buf, parms->d_partial_sums,shift,sim->boundary_stream);
+//           printf("gpu: %d\n",nTotalAtomsCellList);
+
+           cudaMemcpyAsync(charBuf, (void*)(sim->gpu_atoms_buf), nTotalAtomsCellList * sizeof(AtomMsg), cudaMemcpyDeviceToHost,sim->boundary_stream);
+           cudaStreamSynchronize(sim->boundary_stream);
    }
-   return nBuf*sizeof(AtomMsg);
+   return nTotalAtomsCellList*sizeof(AtomMsg);
 }
 
 /// The unloadBuffer function for a halo exchange of atom data.
@@ -402,25 +450,45 @@ int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
 /// placed in halo kink cells.
 /// \see HaloExchangeSt::unloadBuffer for an explanation of the
 /// unloadBuffer parameters.
+/// @param face Not used for this function. The only reason we keep it is to match the unloadForcesBuffer declaration
 void unloadAtomsBuffer(void* vparms, void* data, int face, int bufSize, char* charBuf)
 {
    AtomExchangeParms* parms = (AtomExchangeParms*) vparms;
-   SimFlat* s = (SimFlat*) data;
-   AtomMsg* buf = (AtomMsg*) charBuf;
-   int nBuf = bufSize / sizeof(AtomMsg);
+   SimFlat* sim = (SimFlat*) data;
    assert(bufSize % sizeof(AtomMsg) == 0);
-   
-   for (int ii=0; ii<nBuf; ++ii)
+
+   int nBuf = bufSize / sizeof(AtomMsg);
+
+   if(sim->method == 4)
    {
-      int gid   = buf[ii].gid;
-      int type  = buf[ii].type;
-      real_t rx = buf[ii].rx;
-      real_t ry = buf[ii].ry;
-      real_t rz = buf[ii].rz;
-      real_t px = buf[ii].px;
-      real_t py = buf[ii].py;
-      real_t pz = buf[ii].pz;
-      putAtomInBox(s->boxes, s->atoms, gid, type, rx, ry, rz, px, py, pz);
+
+           AtomMsg* buf = (AtomMsg*) charBuf;
+           //   const int nlUpdateRequired = neighborListUpdateRequired(s->atoms->neighborList,s->boxes,s->atoms);
+           const int nlUpdateRequired = neighborListUpdateRequired(sim);
+           for (int ii=0; ii<nBuf; ++ii)
+           {
+                   int gid   = buf[ii].gid;
+                   int type  = buf[ii].type;
+                   real_t rx = buf[ii].rx;
+                   real_t ry = buf[ii].ry;
+                   real_t rz = buf[ii].rz;
+                   real_t px = buf[ii].px;
+                   real_t py = buf[ii].py;
+                   real_t pz = buf[ii].pz;
+                   if(nlUpdateRequired){
+                           int iOff = putAtomInBox(sim->boxes, sim->atoms, gid, type, rx, ry, rz, px, py, pz);
+
+                           if(iOff >= (MAXATOMS*sim->boxes->nLocalBoxes))
+                                   hashTablePut(sim->atomExchange->hashTable, iOff); //remember iOff only for particles which are mapped to haloCells
+                           else //putting particle to local 
+                                   sim->atoms->neighborList->updateLinkCellsRequired = 1; 
+                   }else{
+                           int iOff = hashTableGet(sim->atomExchange->hashTable);
+                           updateAtomInBoxAt(sim->boxes, sim->atoms, gid, type, rx, ry, rz, px, py, pz,iOff);
+                   }
+           }
+   }else{
+      unloadAtomsBufferToGpu(charBuf, nBuf, sim, sim->gpu_atoms_buf, sim->boundary_stream);   
    }
 }
 
@@ -432,7 +500,11 @@ void destroyAtomsExchange(void* vparms)
    {
       free(parms->pbcFactor[ii]);
       free(parms->cellList[ii]);
+      cudaFree(parms->cellListGpu[ii]);
    }
+   cudaFree(parms->d_natoms_buf);
+   cudaFree(parms->d_partial_sums);
+   free(parms->h_natoms_buf);
 }
 
 /// Make a list of link cells that need to send data across the
@@ -444,7 +516,7 @@ void destroyAtomsExchange(void* vparms)
 /// coordinates of link cells.
 int* mkForceSendCellList(LinkCell* boxes, int face, int nCells)
 {
-   int* list = comdMalloc(nCells*sizeof(int));
+   int* list = (int*)comdMalloc(nCells*sizeof(int));
    int xBegin, xEnd, yBegin, yEnd, zBegin, zEnd;
 
    int nx = boxes->gridSize[0];
@@ -493,7 +565,7 @@ int* mkForceSendCellList(LinkCell* boxes, int face, int nCells)
 /// coordinates of link cells.
 int* mkForceRecvCellList(LinkCell* boxes, int face, int nCells)
 {
-   int* list = comdMalloc(nCells*sizeof(int));
+   int* list = (int*)comdMalloc(nCells*sizeof(int));
    int xBegin, xEnd, yBegin, yEnd, zBegin, zEnd;
 
    int nx = boxes->gridSize[0];
@@ -533,33 +605,7 @@ int* mkForceRecvCellList(LinkCell* boxes, int face, int nCells)
    return list;
 }
 
-/// The loadBuffer function for a force exchange.
-/// Iterate the send list and load the derivative of the embedding
-/// energy with respect to the local density into the send buffer.
-///
-/// \see HaloExchangeSt::loadBuffer for an explanation of the loadBuffer
-/// parameters.
-int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf)
-{
-   ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
-   ForceExchangeData* data = (ForceExchangeData*) vdata;
-   ForceMsg* buf = (ForceMsg*) charBuf;
-   
-   int nCells = parms->nCells[face];
-   int* cellList = parms->sendCells[face];
-   int nBuf = 0;
-   for (int iCell=0; iCell<nCells; ++iCell)
-   {
-      int iBox = cellList[iCell];
-      int iOff = iBox*MAXATOMS;
-      for (int ii=iOff; ii<iOff+data->boxes->nAtoms[iBox]; ++ii)
-      {
-         buf[nBuf].dfEmbed = data->dfEmbed[ii];
-         ++nBuf;
-      }
-   }
-   return nBuf*sizeof(ForceMsg);
-}
+
 
 /// The unloadBuffer function for a force exchange.
 /// Data is received in an order that naturally aligns with the atom
@@ -567,7 +613,7 @@ int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf)
 ///
 /// \see HaloExchangeSt::unloadBuffer for an explanation of the
 /// unloadBuffer parameters.
-void unloadForceBuffer(void* vparms, void* vdata, int face, int bufSize, char* charBuf)
+void unloadForceBufferCpu(void* vparms, void* vdata, int face, int bufSize, char* charBuf)
 {
    ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
    ForceExchangeData* data = (ForceExchangeData*) vdata;
@@ -590,6 +636,72 @@ void unloadForceBuffer(void* vparms, void* vdata, int face, int bufSize, char* c
    assert(iBuf == bufSize/ sizeof(ForceMsg));
 }
 
+/// The loadBuffer function for a force exchange.
+/// Iterate the send list and load the derivative of the embedding
+/// energy with respect to the local density into the send buffer.
+///
+/// \see HaloExchangeSt::loadBuffer for an explanation of the loadBuffer
+/// parameters.
+int loadForceBufferCpu(void* vparms, void* vdata, int face, char* charBuf)
+{
+   ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
+   ForceExchangeData* data = (ForceExchangeData*) vdata;
+   ForceMsg* buf = (ForceMsg*) charBuf;
+   
+   int nCells = parms->nCells[face];
+   int* cellList = parms->sendCells[face];
+   int nBuf = 0;
+   for (int iCell=0; iCell<nCells; ++iCell)
+   {
+      int iBox = cellList[iCell];
+      int iOff = iBox*MAXATOMS;
+      for (int ii=iOff; ii<iOff+data->boxes->nAtoms[iBox]; ++ii)
+      {
+         buf[nBuf].dfEmbed = data->dfEmbed[ii];
+         ++nBuf;
+      }
+   }
+   return nBuf*sizeof(ForceMsg);
+}
+/// The loadBuffer function for a force exchange.
+/// Iterate the send list and load the derivative of the embedding
+/// energy with respect to the local density into the send buffer.
+///
+/// \see HaloExchangeSt::loadBuffer for an explanation of the loadBuffer
+/// parameters.
+int loadForceBuffer(void* vparms, void* vdata, int face, char* charBuf)
+{
+   ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
+   SimFlat* s = (SimFlat*) vdata;
+   
+   int nCells = parms->nCells[face];
+   int* cellListGpu = parms->sendCellsGpu[face];
+   int nBuf = 0;
+
+   loadForceBufferFromGpu(charBuf, &nBuf, nCells, cellListGpu, parms->natoms_buf[face], parms->partial_sums[face], s, s->gpu_force_buf, s->boundary_stream);
+
+   return nBuf*sizeof(ForceMsg);
+}
+
+/// The unloadBuffer function for a force exchange.
+/// Data is received in an order that naturally aligns with the atom
+/// storage so it is simple to put the data where it belongs.
+///
+/// \see HaloExchangeSt::unloadBuffer for an explanation of the
+/// unloadBuffer parameters.
+void unloadForceBuffer(void* vparms, void* vdata, int face, int bufSize, char* charBuf)
+{
+   ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
+   SimFlat* s = (SimFlat*) vdata;
+   assert(bufSize % sizeof(ForceMsg) == 0);
+   
+   int nCells = parms->nCells[face];
+   int* cellListGpu = parms->recvCellsGpu[face];
+   int nBuf = bufSize / sizeof(ForceMsg);
+  
+   unloadForceBufferToGpu(charBuf, nBuf, nCells, cellListGpu, parms->natoms_buf[face], parms->partial_sums[face], s, s->gpu_force_buf, s->boundary_stream);   
+}
+
 void destroyForceExchange(void* vparms)
 {
    ForceExchangeParms* parms = (ForceExchangeParms*) vparms;
@@ -598,6 +710,10 @@ void destroyForceExchange(void* vparms)
    {
       free(parms->sendCells[ii]);
       free(parms->recvCells[ii]);
+      cudaFree(parms->sendCellsGpu[ii]);
+      cudaFree(parms->recvCellsGpu[ii]);
+      cudaFree(parms->natoms_buf[ii]);
+      cudaFree(parms->partial_sums[ii]);
    }
 }
 
@@ -613,7 +729,11 @@ void sortAtomsInCell(Atoms* atoms, LinkCell* boxes, int iBox)
 {
    int nAtoms = boxes->nAtoms[iBox];
 
+#if defined(_WIN32) || defined(_WIN64)
+   AtomMsg *tmp = (AtomMsg*)malloc(sizeof(AtomMsg) * nAtoms);
+#else
    AtomMsg tmp[nAtoms];
+#endif
 
    int begin = iBox*MAXATOMS;
    int end = begin + nAtoms;
@@ -621,26 +741,29 @@ void sortAtomsInCell(Atoms* atoms, LinkCell* boxes, int iBox)
    {
       tmp[iTmp].gid  = atoms->gid[ii];
       tmp[iTmp].type = atoms->iSpecies[ii];
-      tmp[iTmp].rx =   atoms->r[ii][0];
-      tmp[iTmp].ry =   atoms->r[ii][1];
-      tmp[iTmp].rz =   atoms->r[ii][2];
-      tmp[iTmp].px =   atoms->p[ii][0];
-      tmp[iTmp].py =   atoms->p[ii][1];
-      tmp[iTmp].pz =   atoms->p[ii][2];
+      tmp[iTmp].rx =   atoms->r.x[ii];
+      tmp[iTmp].ry =   atoms->r.y[ii];
+      tmp[iTmp].rz =   atoms->r.z[ii];
+      tmp[iTmp].px =   atoms->p.x[ii];
+      tmp[iTmp].py =   atoms->p.y[ii];
+      tmp[iTmp].pz =   atoms->p.z[ii];
    }
    qsort(&tmp, nAtoms, sizeof(AtomMsg), sortAtomsById);
    for (int ii=begin, iTmp=0; ii<end; ++ii, ++iTmp)
    {
       atoms->gid[ii]   = tmp[iTmp].gid;
       atoms->iSpecies[ii] = tmp[iTmp].type;
-      atoms->r[ii][0]  = tmp[iTmp].rx;
-      atoms->r[ii][1]  = tmp[iTmp].ry;
-      atoms->r[ii][2]  = tmp[iTmp].rz;
-      atoms->p[ii][0]  = tmp[iTmp].px;
-      atoms->p[ii][1]  = tmp[iTmp].py;
-      atoms->p[ii][2]  = tmp[iTmp].pz;
+      atoms->r.x[ii]  = tmp[iTmp].rx;
+      atoms->r.y[ii]  = tmp[iTmp].ry;
+      atoms->r.z[ii]  = tmp[iTmp].rz;
+      atoms->p.x[ii]  = tmp[iTmp].px;
+      atoms->p.y[ii]  = tmp[iTmp].py;
+      atoms->p.z[ii]  = tmp[iTmp].pz;
    }
-   
+
+#if defined(_WIN32) || defined(_WIN64)
+   free(tmp);
+#endif
 }
 
 ///  A function suitable for passing to qsort to sort atoms by gid.

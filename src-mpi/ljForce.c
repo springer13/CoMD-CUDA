@@ -59,6 +59,9 @@
 /// 
 ///
 
+#include "defines.h"
+#include "neighborList.h"
+#include "mytype.h"
 #include "ljForce.h"
 
 #include <stdlib.h>
@@ -72,27 +75,15 @@
 #include "memUtils.h"
 #include "CoMDTypes.h"
 
+#include "gpu_types.h"
+#include "gpu_utility.h"
+
 #define POT_SHIFT 1.0
 
-/// Derived struct for a Lennard Jones potential.
-/// Polymorphic with BasePotential.
-/// \see BasePotential
-typedef struct LjPotentialSt
-{
-   real_t cutoff;          //!< potential cutoff distance in Angstroms
-   real_t mass;            //!< mass of atoms in intenal units
-   real_t lat;             //!< lattice spacing (angs) of unit cell
-   char latticeType[8];    //!< lattice type, e.g. FCC, BCC, etc.
-   char  name[3];	   //!< element name
-   int	 atomicNo;	   //!< atomic number  
-   int  (*force)(SimFlat* s); //!< function pointer to force routine
-   void (*print)(FILE* file, BasePotential* pot);
-   void (*destroy)(BasePotential** pot); //!< destruction of the potential
-   real_t sigma;
-   real_t epsilon;
-} LjPotential;
+EXTERN_C void ljForceGpu(SimGpu sim);
 
 static int ljForce(SimFlat* s);
+static int ljForceCpuNL(SimFlat* sim);
 static void ljPrint(FILE* file, BasePotential* pot);
 
 void ljDestroy(BasePotential** inppot)
@@ -141,9 +132,19 @@ void ljPrint(FILE* file, BasePotential* pot)
    fprintf(file, "  Sigma            : "FMT1" Angstroms\n", ljPot->sigma);
 }
 
-int ljForce(SimFlat* s)
+int ljForce(SimFlat* sim)
 {
-   LjPotential* pot = (LjPotential *) s->pot;
+   if(sim->method == 4)
+           ljForceCpuNL(sim);
+   else
+           ljForceGpu(sim->gpu);
+
+   return 0;
+}
+
+int ljForceCpuNL(SimFlat* sim)
+{
+   LjPotential* pot = (LjPotential *) sim->pot;
    real_t sigma = pot->sigma;
    real_t epsilon = pot->epsilon;
    real_t rCut = pot->cutoff;
@@ -151,85 +152,206 @@ int ljForce(SimFlat* s)
 
    // zero forces and energy
    real_t ePot = 0.0;
-   s->ePotential = 0.0;
-   int fSize = s->boxes->nTotalBoxes*MAXATOMS;
+   sim->ePotential = 0.0;
+   int fSize = sim->boxes->nTotalBoxes*MAXATOMS;
    for (int ii=0; ii<fSize; ++ii)
    {
-      zeroReal3(s->atoms->f[ii]);
-      s->atoms->U[ii] = 0.;
+      sim->atoms->U[ii] = 0.;
    }
+   zeroVecAll(&(sim->atoms->f), fSize);
    
    real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
 
    real_t rCut6 = s6 / (rCut2*rCut2*rCut2);
    real_t eShift = POT_SHIFT * rCut6 * (rCut6 - 1.0);
 
+   NeighborList* neighborList = sim->atoms->neighborList;
+   real_t *rx = sim->atoms->r.x;
+   real_t *ry = sim->atoms->r.y;
+   real_t *rz = sim->atoms->r.z;
+
+   real_t *fx = sim->atoms->f.x;
+   real_t *fy = sim->atoms->f.y;
+   real_t *fz = sim->atoms->f.z;
+
+   real_t *U = sim->atoms->U;
+
+   const int nLocalBoxes = sim->boxes->nLocalBoxes;
+   const int nMaxLocalParticles = MAXATOMS*nLocalBoxes;
    int nbrBoxes[27];
    // loop over local boxes
-   for (int iBox=0; iBox<s->boxes->nLocalBoxes; iBox++)
+   for (int iBox=0; iBox<nLocalBoxes; iBox++)
    {
-      int nIBox = s->boxes->nAtoms[iBox];
-      if ( nIBox == 0 ) continue;
-      int nNbrBoxes = getNeighborBoxes(s->boxes, iBox, nbrBoxes);
-      // loop over neighbors of iBox
-      for (int jTmp=0; jTmp<nNbrBoxes; jTmp++)
-      {
-         int jBox = nbrBoxes[jTmp];
-         
-         assert(jBox>=0);
-         
-         int nJBox = s->boxes->nAtoms[jBox];
-         if ( nJBox == 0 ) continue;
-         
-         // loop over atoms in iBox
-         for (int iOff=iBox*MAXATOMS,ii=0; ii<nIBox; ii++,iOff++)
-         {
-            int iId = s->atoms->gid[iOff];
-            // loop over atoms in jBox
-            for (int jOff=MAXATOMS*jBox,ij=0; ij<nJBox; ij++,jOff++)
-            {
-               real_t dr[3];
-               int jId = s->atoms->gid[jOff];  
-               if (jBox < s->boxes->nLocalBoxes && jId <= iId )
-                  continue; // don't double count local-local pairs.
-               real_t r2 = 0.0;
-               for (int m=0; m<3; m++)
-               {
-                  dr[m] = s->atoms->r[iOff][m]-s->atoms->r[jOff][m];
-                  r2+=dr[m]*dr[m];
-               }
+           int nIBox = sim->boxes->nAtoms[iBox];
+           // loop over atoms in iBox
+           for (int iOff=MAXATOMS*iBox,ii=0; ii<nIBox; ii++,iOff++)
+           {
 
-               if ( r2 > rCut2) continue;
+                   int iLid = sim->atoms->lid[iOff];
+                   real_t irx = rx[iOff];
+                   real_t iry = ry[iOff];
+                   real_t irz = rz[iOff];
+                   real_t ifx = 0.0;
+                   real_t ify = 0.0;
+                   real_t ifz = 0.0;
+                   real_t iU = 0.0;
+                   assert(iLid < neighborList->nMaxLocal);
+                   int* iNeighborList = &(neighborList->list[neighborList->maxNeighbors * iLid]);
+                   const int nNeighbors = neighborList->nNeighbors[iLid];
+                   // loop over atoms in neighborlist
+#pragma vector always
+#pragma ivdep
+                   for (int ij=0; ij<nNeighbors; ij++)
+                   {
+                           int jOff = iNeighborList[ij];
 
-               // Important note:
-               // from this point on r actually refers to 1.0/r
-               r2 = 1.0/r2;
-               real_t r6 = s6 * (r2*r2*r2);
-               real_t eLocal = r6 * (r6 - 1.0) - eShift;
-               s->atoms->U[iOff] += 0.5*eLocal;
-               s->atoms->U[jOff] += 0.5*eLocal;
+                           real_t drx = irx - rx[jOff];
+                           real_t dry = iry - ry[jOff];
+                           real_t drz = irz - rz[jOff];
+                           real_t r2 = drx*drx + dry*dry + drz*drz;
 
-               // calculate energy contribution based on whether
-               // the neighbor box is local or remote
-               if (jBox < s->boxes->nLocalBoxes)
-                  ePot += eLocal;
-               else
-                  ePot += 0.5 * eLocal;
 
-               // different formulation to avoid sqrt computation
-               real_t fr = - 4.0*epsilon*r6*r2*(12.0*r6 - 6.0);
-               for (int m=0; m<3; m++)
-               {
-                  s->atoms->f[iOff][m] -= dr[m]*fr;
-                  s->atoms->f[jOff][m] += dr[m]*fr;
-               }
-            } // loop over atoms in jBox
-         } // loop over atoms in iBox
-      } // loop over neighbor boxes
+                           real_t fr = 0.0;
+                           real_t eLocal = 0.0;
+                           // Important note:
+                           // from this point on r actually refers to 1.0/r
+                           if ( r2 <= rCut2) 
+                           {
+                             r2 = 1.0/r2;
+                             real_t r6 = (s6*r2) * (r2*r2);
+                             eLocal = r6 * (r6 - 1.0) - eShift;
+                             iU += eLocal;
+
+
+                             // different formulation to avoid sqrt computation
+                             fr = - 4.0*epsilon*r6*r2*(12.0*r6 - 6.0);
+
+                             ifx -= drx*fr;
+                             ify -= dry*fr;
+                             ifz -= drz*fr;
+                           }
+                           U[jOff] += eLocal;
+                           fx[jOff] += drx*fr;
+                           fy[jOff] += dry*fr;
+                           fz[jOff] += drz*fr;
+                   } // loop over atoms in neighborlist
+                   U[iOff] += iU;
+                   fx[iOff] += ifx;
+                   fy[iOff] += ify;
+                   fz[iOff] += ifz;
+           } // // loop over atoms in iBox
    } // loop over local boxes in system
 
+   // loop over local boxes
+   for (int iBox=0; iBox<nLocalBoxes; iBox++)
+   {
+           int nIBox = sim->boxes->nAtoms[iBox];
+           // loop over atoms in iBox
+           for (int iOff=MAXATOMS*iBox,ii=0; ii<nIBox; ii++,iOff++)
+           {
+              U[iOff] *= 0.5;
+              // calculate energy contribution 
+              ePot += U[iOff];
+           }
+   }
    ePot = ePot*4.0*epsilon;
-   s->ePotential = ePot;
+   sim->ePotential = ePot;
 
    return 0;
 }
+//{
+//   LjPotential* pot = (LjPotential *) sim->pot;
+//   real_t sigma = pot->sigma;
+//   real_t epsilon = pot->epsilon;
+//   real_t rCut = pot->cutoff;
+//   real_t rCut2 = rCut*rCut;
+//
+//   // zero forces and energy
+//   real_t ePot = 0.0;
+//   sim->ePotential = 0.0;
+//   int fSize = sim->boxes->nTotalBoxes*MAXATOMS;
+//   for (int ii=0; ii<fSize; ++ii)
+//   {
+//      sim->atoms->U[ii] = 0.;
+//   }
+//   zeroVecAll(&(sim->atoms->f), fSize);
+//   
+//   real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
+//
+//   real_t rCut6 = s6 / (rCut2*rCut2*rCut2);
+//   real_t eShift = POT_SHIFT * rCut6 * (rCut6 - 1.0);
+//
+//   real_t *rx = sim->atoms->r.x;
+//   real_t *ry = sim->atoms->r.y;
+//   real_t *rz = sim->atoms->r.z;
+//   real_t *fx = sim->atoms->f.x;
+//   real_t *fy = sim->atoms->f.y;
+//   real_t *fz = sim->atoms->f.z;
+//
+//   NeighborList* neighborList = sim->atoms->neighborList;
+//
+//   int nbrBoxes[27];
+//   // loop over local boxes
+//   for (int iBox=0; iBox<sim->boxes->nLocalBoxes; iBox++)
+//   {
+//           int nIBox = sim->boxes->nAtoms[iBox];
+//           // loop over atoms in iBox
+//           for (int iOff=MAXATOMS*iBox,ii=0; ii<nIBox; ii++,iOff++)
+//           {
+//
+//                   int iLid = sim->atoms->lid[iOff];
+//                   assert(iLid < neighborList->nMaxLocal);
+//                   int* iNeighborList = &(neighborList->list[neighborList->maxNeighbors * iLid]);
+//                   const int nNeighbors = neighborList->nNeighbors[iLid];
+//                   // loop over atoms in neighborlist
+//                   for (int ij=0; ij<nNeighbors; ij++)
+//                   {
+//                           int jOff = iNeighborList[ij];
+//
+//                           real_t r2 = 0.0;
+//                           real3_old dr;
+//                           dr[0] = rx[iOff] - rx[jOff];
+//                           r2+=dr[0]*dr[0];
+//                           dr[1] = ry[iOff] - ry[jOff];
+//                           r2+=dr[1]*dr[1];
+//                           dr[2] = rz[iOff] - rz[jOff];
+//                           r2+=dr[2]*dr[2];
+//
+//                           if ( r2 <= rCut2){ 
+//
+//                              // Important note:
+//                              // from this point on r actually refers to 1.0/r
+//                              r2 = 1.0/r2;
+//                              real_t r6 = s6 * (r2*r2*r2);
+//                              real_t eLocal = r6 * (r6 - 1.0) - eShift;
+//                              sim->atoms->U[iOff] += 0.5*eLocal;
+//                              sim->atoms->U[jOff] += 0.5*eLocal;
+//
+//                              // different formulation to avoid sqrt computation
+//                              real_t fr = - 4.0*epsilon*r6*r2*(12.0*r6 - 6.0);
+//
+//                              fx[iOff] -= dr[0]*fr;
+//                              fy[iOff] -= dr[1]*fr;
+//                              fz[iOff] -= dr[2]*fr;
+//                              fx[jOff] += dr[0]*fr;
+//                              fy[jOff] += dr[1]*fr;
+//                              fz[jOff] += dr[2]*fr;
+//                           }
+//                   } // loop over atoms in neighborlist
+//           } // // loop over atoms in iBox
+//   } // loop over local boxes in system
+//
+//   // loop over local boxes
+//   for (int iBox=0; iBox<sim->boxes->nLocalBoxes; iBox++)
+//   {
+//           int nIBox = sim->boxes->nAtoms[iBox];
+//           // loop over atoms in iBox
+//           for (int iOff=MAXATOMS*iBox,ii=0; ii<nIBox; ii++,iOff++)
+//              ePot += sim->atoms->U[iOff];
+//   }
+//
+//   ePot = ePot*4.0*epsilon;
+//   sim->ePotential = ePot;
+//
+//   return 0;
+//}

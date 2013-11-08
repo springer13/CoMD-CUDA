@@ -206,6 +206,13 @@ Command parseCommandLine(int argc, char** argv)
    cmd.lat = -1.0;
    cmd.temperature = 600.0;
    cmd.initialDelta = 0.0;
+   cmd.relativeSkinDistance= 0.1;
+
+   // gpu-specific
+   memset(cmd.method, 0, 1024);
+   strcpy(cmd.method, "thread_atom");
+   cmd.gpuAsync = 0;
+   cmd.gpuProfile = 0;
 
    int help=0;
    // add arguments for processing.  Please update the html documentation too!
@@ -226,6 +233,12 @@ Command parseCommandLine(int argc, char** argv)
    addArg("lat",        'l', 1, 'd',  &(cmd.lat),          0,             "lattice parameter (Angstroms)");
    addArg("temp",       'T', 1, 'd',  &(cmd.temperature),  0,             "initial temperature (K)");
    addArg("delta",      'r', 1, 'd',  &(cmd.initialDelta), 0,             "initial delta (Angstroms)");
+   addArg("skinDistance",'s', 1, 'd',  &(cmd.relativeSkinDistance), 0,     "skinDistance (relative to cutoff (default: 0.1))");
+   addArg("method",  'm', 1, 's',  cmd.method, sizeof(cmd.method), "thread_atom, warp_atom,cta_cell,thread_atom_nl,cpu_nl");
+
+   // gpu-specific
+   addArg("gpuAsync",   'a', 1, 'i',  &(cmd.gpuAsync),     0,             "communicaton hiding optimization using streams");
+   addArg("gpuProfile", 's', 0, 'i',  &(cmd.gpuProfile),   0,             "profiling mode: reboxing disabled, single kernel run");
 
    processArgs(argc,argv);
 
@@ -270,7 +283,10 @@ void printCmdYaml(FILE* file, Command* cmd)
            "  printRate: %d\n"
            "  Time step: %g fs\n"
            "  Initial Temperature: %g K\n"
-           "  Initial Delta: %g Angstroms\n"
+           "  Initial Delta: %g Angstroms\n\n"
+           "  GPU async opt: %d\n"
+           "  GPU profiling mode: %d\n"
+           "  GPU method: %s\n"
            "\n",
            cmd->doeam,
            cmd->potDir,
@@ -283,7 +299,10 @@ void printCmdYaml(FILE* file, Command* cmd)
            cmd->printRate,
            cmd->dt,
            cmd->temperature,
-           cmd->initialDelta
+           cmd->initialDelta,
+	   cmd->gpuAsync,
+	   cmd->gpuProfile,
+	   cmd->method
    );
    fflush(file);
 }

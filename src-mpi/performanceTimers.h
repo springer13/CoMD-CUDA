@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 /// Timer handles
-enum TimerHandle{totalTimer, loopTimer, timestepTimer,
+enum TimerHandle{totalTimer, loopTimer, timestepTimer,neighborListBuildTimer,
                  positionTimer, velocityTimer,  redistributeTimer,
                  atomHaloTimer, computeForceTimer, eamHaloTimer,
                  commHaloTimer, commReduceTimer, numberOfTimers};
@@ -27,11 +27,13 @@ enum TimerHandle{totalTimer, loopTimer, timestepTimer,
 ///
 #ifndef NTIMING
 #define startTimer(handle)    \
+   /*cudaDeviceSynchronize();*/   \
    do                         \
    {                          \
       profileStart(handle);   \
    } while(0)
 #define stopTimer(handle)     \
+   /*cudaDeviceSynchronize();*/   \
    do                         \
    {                          \
       profileStop(handle);    \

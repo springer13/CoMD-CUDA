@@ -53,9 +53,15 @@ void yamlBegin(void)
    struct tm* ptm = localtime(&rawtime);
    char sdate[25];
   //use tm_mon+1 because tm_mon is 0 .. 11 instead of 1 .. 12
+#if defined(_WIN32) || defined(_WIN64) 
+   sprintf (sdate,"%04d-%02d-%02d-%02d-%02d-%02d",
+            ptm->tm_year + 1900, ptm->tm_mon+1,
+            ptm->tm_mday, ptm->tm_hour, ptm->tm_min,ptm->tm_sec);
+#else
    sprintf (sdate,"%04d:%02d:%02d-%02d:%02d:%02d",
             ptm->tm_year + 1900, ptm->tm_mon+1,
             ptm->tm_mday, ptm->tm_hour, ptm->tm_min,ptm->tm_sec);
+#endif
    sprintf(filename, "%s.%s.yaml", CoMDVariant, sdate);
    yamlFile = fopen(filename, "w");
 }

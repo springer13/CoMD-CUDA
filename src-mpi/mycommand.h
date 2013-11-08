@@ -14,6 +14,7 @@ typedef struct CommandSt
    char potName[1024]; //!< the name of the potential
    char potType[1024]; //!< the type of the potential (funcfl or setfl)
    int doeam;          //!< a flag to determine whether we're running EAM potentials
+   int useNL;          //!< a flag to determine whether we're using a neighborlist 
    int nx;             //!< number of unit cells in x
    int ny;             //!< number of unit cells in y
    int nz;             //!< number of unit cells in z
@@ -22,10 +23,16 @@ typedef struct CommandSt
    int zproc;          //!< number of processors in z direction
    int nSteps;         //!< number of time steps to run
    int printRate;      //!< number of steps between output
+   double relativeSkinDistance; //!< SkinDistance as percent of cutoff (e.g. 0.1 would result in a skinDistance of size 0.1 * cutoff)
    double dt;          //!< time step (in femtoseconds)
    double lat;         //!< lattice constant (in Angstroms)
    double temperature; //!< simulation initial temperature (in Kelvin)
    double initialDelta; //!< magnitude of initial displacement from lattice (in Angstroms)
+   double initialSkinDistance; //!< initial skinDistance in percent
+   char method[1024]; //!< method to use on gpu: thread/atom, warp/atom or others
+ 
+   int gpuAsync;	//!< communication latency hiding optimization using streams
+   int gpuProfile;	//!< skip redistribute routines and run only one step of compute forces
 } Command;
 
 /// Process command line arguments into an easy to handle structure.

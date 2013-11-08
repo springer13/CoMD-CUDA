@@ -5,12 +5,15 @@
 
 #include <math.h>
 #include <assert.h>
+#include <float.h>
 
 #include "constants.h"
 #include "decomposition.h"
 #include "parallel.h"
 #include "random.h"
 #include "linkCells.h"
+#include "defines.h"
+#include "neighborList.h"
 #include "timestep.h"
 #include "memUtils.h"
 #include "performanceTimers.h"
@@ -20,17 +23,18 @@ static void computeVcm(SimFlat* s, real_t vcm[3]);
 /// \details
 /// Call functions such as createFccLattice and setTemperature to set up
 /// initial atom positions and momenta.
-Atoms* initAtoms(LinkCell* boxes)
+Atoms* initAtoms(LinkCell* boxes, const real_t skinDistance)
 {
-   Atoms* atoms = comdMalloc(sizeof(Atoms));
+   Atoms* atoms = (Atoms*)comdMalloc(sizeof(Atoms));
 
-   int maxTotalAtoms = MAXATOMS*boxes->nTotalBoxes;
+   int maxTotalAtoms = MAXATOMS*boxes->nTotalBoxes + 1; //one atom placed at infinity for neighborlist implementation
 
    atoms->gid =      (int*)   comdMalloc(maxTotalAtoms*sizeof(int));
+   atoms->lid =      (int*)   comdMalloc(MAXATOMS*boxes->nLocalBoxes*sizeof(int));
    atoms->iSpecies = (int*)   comdMalloc(maxTotalAtoms*sizeof(int));
-   atoms->r =        (real3*) comdMalloc(maxTotalAtoms*sizeof(real3));
-   atoms->p =        (real3*) comdMalloc(maxTotalAtoms*sizeof(real3));
-   atoms->f =        (real3*) comdMalloc(maxTotalAtoms*sizeof(real3));
+   malloc_vec(&(atoms->r), maxTotalAtoms);
+   malloc_vec(&(atoms->p), maxTotalAtoms);
+   malloc_vec(&(atoms->f), maxTotalAtoms);
    atoms->U =        (real_t*)comdMalloc(maxTotalAtoms*sizeof(real_t));
 
    atoms->nLocal = 0;
@@ -39,12 +43,20 @@ Atoms* initAtoms(LinkCell* boxes)
    for (int iOff = 0; iOff < maxTotalAtoms; iOff++)
    {
       atoms->gid[iOff] = 0;
+      if(iOff < MAXATOMS*boxes->nLocalBoxes)
+         atoms->lid[iOff] = 0;
       atoms->iSpecies[iOff] = 0;
-      zeroReal3(atoms->r[iOff]);
-      zeroReal3(atoms->p[iOff]);
-      zeroReal3(atoms->f[iOff]);
       atoms->U[iOff] = 0.;
    }
+   zeroVecAll(&(atoms->r),maxTotalAtoms);
+   zeroVecAll(&(atoms->p),maxTotalAtoms);
+   zeroVecAll(&(atoms->f),maxTotalAtoms);
+
+   atoms->r.x[maxTotalAtoms-1] = FLT_MAX; //place at infinity
+   atoms->r.y[maxTotalAtoms-1] = FLT_MAX;
+   atoms->r.z[maxTotalAtoms-1] = FLT_MAX;
+
+   atoms->neighborList = initNeighborList(boxes->nLocalBoxes, skinDistance);
 
    return atoms;
 }
@@ -52,10 +64,15 @@ Atoms* initAtoms(LinkCell* boxes)
 void destroyAtoms(Atoms *atoms)
 {
    freeMe(atoms,gid);
+   freeMe(atoms,lid);
    freeMe(atoms,iSpecies);
-   freeMe(atoms,r);
-   freeMe(atoms,p);
-   freeMe(atoms,f);
+   freeMe(atoms,U);
+   free_vec(&atoms->r);
+   free_vec(&atoms->p);
+   free_vec(&atoms->f);
+   
+   destroyNeighborList(&(atoms->neighborList));
+   free(atoms);
 }
 
 /// Creates atom positions on a face centered cubic (FCC) lattice with
@@ -67,7 +84,7 @@ void createFccLattice(int nx, int ny, int nz, real_t lat, SimFlat* s)
    const real_t* localMax = s->domain->localMax; // alias
    
    int nb = 4; // number of atoms in the basis
-   real3 basis[4] = { {0.25, 0.25, 0.25},
+   real3_old basis[4] = { {0.25, 0.25, 0.25},
       {0.25, 0.75, 0.75},
       {0.75, 0.25, 0.75},
       {0.75, 0.75, 0.25} };
@@ -125,9 +142,9 @@ void setVcm(SimFlat* s, real_t newVcm[3])
          int iSpecies = s->atoms->iSpecies[iOff];
          real_t mass = s->species[iSpecies].mass;
 
-         s->atoms->p[iOff][0] += mass * vShift[0];
-         s->atoms->p[iOff][1] += mass * vShift[1];
-         s->atoms->p[iOff][2] += mass * vShift[2];
+         s->atoms->p.x[iOff] += mass * vShift[0];
+         s->atoms->p.y[iOff] += mass * vShift[1];
+         s->atoms->p.z[iOff] += mass * vShift[2];
       }
    }
 }
@@ -153,9 +170,9 @@ void setTemperature(SimFlat* s, real_t temperature)
          real_t mass = s->species[iType].mass;
          real_t sigma = sqrt(kB_eV * temperature/mass);
          uint64_t seed = mkSeed(s->atoms->gid[iOff], 123);
-         s->atoms->p[iOff][0] = mass * sigma * gasdev(&seed);
-         s->atoms->p[iOff][1] = mass * sigma * gasdev(&seed);
-         s->atoms->p[iOff][2] = mass * sigma * gasdev(&seed);
+         s->atoms->p.x[iOff] = mass * sigma * gasdev(&seed);
+         s->atoms->p.y[iOff] = mass * sigma * gasdev(&seed);
+         s->atoms->p.z[iOff] = mass * sigma * gasdev(&seed);
       }
    }
    // compute the resulting temperature
@@ -171,9 +188,9 @@ void setTemperature(SimFlat* s, real_t temperature)
    {
       for (int iOff=MAXATOMS*iBox, ii=0; ii<s->boxes->nAtoms[iBox]; ++ii, ++iOff)
       {
-         s->atoms->p[iOff][0] *= scaleFactor;
-         s->atoms->p[iOff][1] *= scaleFactor;
-         s->atoms->p[iOff][2] *= scaleFactor;
+         s->atoms->p.x[iOff] *= scaleFactor;
+         s->atoms->p.y[iOff] *= scaleFactor;
+         s->atoms->p.z[iOff] *= scaleFactor;
       }
    }
    kineticEnergy(s);
@@ -191,9 +208,9 @@ void randomDisplacements(SimFlat* s, real_t delta)
       for (int iOff=MAXATOMS*iBox, ii=0; ii<s->boxes->nAtoms[iBox]; ++ii, ++iOff)
       {
          uint64_t seed = mkSeed(s->atoms->gid[iOff], 457);
-         s->atoms->r[iOff][0] += (2.0*lcg61(&seed)-1.0) * delta;
-         s->atoms->r[iOff][1] += (2.0*lcg61(&seed)-1.0) * delta;
-         s->atoms->r[iOff][2] += (2.0*lcg61(&seed)-1.0) * delta;
+         s->atoms->r.x[iOff] += (2.0*lcg61(&seed)-1.0) * delta;
+         s->atoms->r.y[iOff] += (2.0*lcg61(&seed)-1.0) * delta;
+         s->atoms->r.z[iOff] += (2.0*lcg61(&seed)-1.0) * delta;
       }
    }
 }
@@ -209,9 +226,9 @@ void computeVcm(SimFlat* s, real_t vcm[3])
    {
       for (int iOff=MAXATOMS*iBox, ii=0; ii<s->boxes->nAtoms[iBox]; ++ii, ++iOff)
       {
-         vcmLocal[0] += s->atoms->p[iOff][0];
-         vcmLocal[1] += s->atoms->p[iOff][1];
-         vcmLocal[2] += s->atoms->p[iOff][2];
+         vcmLocal[0] += s->atoms->p.x[iOff];
+         vcmLocal[1] += s->atoms->p.y[iOff];
+         vcmLocal[2] += s->atoms->p.z[iOff];
 
          int iSpecies = s->atoms->iSpecies[iOff];
          vcmLocal[3] += s->species[iSpecies].mass;
@@ -228,3 +245,17 @@ void computeVcm(SimFlat* s, real_t vcm[3])
    vcm[2] = vcmSum[2]/totalMass;
 }
 
+
+void atomsUpdateLocalId(LinkCell* boxes, Atoms* atoms)
+{
+   int count = 0;
+   for (int iBox=0; iBox<boxes->nLocalBoxes; ++iBox)
+   {
+      for (int iOff=MAXATOMS*iBox, ii=0; ii<boxes->nAtoms[iBox]; ++ii, ++iOff)
+      {
+              atoms->lid[iOff] = count;
+              count++;
+      }
+   }
+   assert(count < atoms->neighborList->nMaxLocal);
+}

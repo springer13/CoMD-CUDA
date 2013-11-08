@@ -1,7 +1,7 @@
-CoMD
+CoMD-CUDA
 ====
 
-Classical molecular dynamics proxy application.
+GPU implementation of classical molecular dynamics proxy application.
 
 This is CoMD version 1.1
 ------------------------

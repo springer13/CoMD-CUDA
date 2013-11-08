@@ -5,9 +5,45 @@
 #define __HALO_EXCHANGE_
 
 #include "mytype.h"
+#include "cuda_runtime.h"
+
 struct AtomsSt;
 struct LinkCellSt;
 struct DomainSt;
+struct HashTableSt;
+
+/// Extra data members that are needed for the exchange of atom data.
+/// For an atom exchange, the HaloExchangeSt::parms will point to a
+/// structure of this type.
+typedef struct AtomExchangeParmsSt
+{
+   int nCells[6];        //!< Number of cells in cellList for each face.
+   int* cellList[6];     //!< List of link cells from which to load data for each face.
+   int* cellListGpu[6];  //!< GPU list of link cells from which to load data for each face.
+   int* d_natoms_buf;    // temp buf for scan result
+   int* h_natoms_buf;    // temp buf for scan result
+   int* d_partial_sums;  //!< device-pointer. partial sums for scan
+   real_t* pbcFactor[6]; //!< Whether this face is a periodic boundary.
+} AtomExchangeParms;
+
+/// A structure to package data for a single atom to pack into a
+/// send/recv buffer.  Also used for sorting atoms within link cells.
+typedef struct AtomMsgSt
+{
+   int gid;
+   int type;
+   real_t rx, ry, rz;
+   real_t px, py, pz;
+} AtomMsg;
+
+/// Same as AtomMsgSt but transposed (i.e. using structure of arrays)
+typedef struct AtomMsgSoASt
+{
+   int* gid;
+   int* type;
+   real_t *rx, *ry, *rz;
+   real_t *px, *py, *pz;
+} AtomMsgSoA;
 
 /// A polymorphic structure to store information about a halo exchange.
 /// This structure can be thought of as an abstract base class that
@@ -65,14 +101,24 @@ typedef struct HaloExchangeSt
    /// A pointer to a sub-class specific structure that contains
    /// additional data members needed by the sub-class.
    void* parms;
-} 
-HaloExchange;
+   /// Hash-table used to lookup the Offset of particle gid within the atoms structure. The hashTable is only used by the atom exchange.
+   struct HashTableSt* hashTable;
+
+   /// Type can be 0 for atom-exchange or 1 for force-exchange
+   int type;
+
+   // MPI buffers
+   char *sendBufM;
+   char *sendBufP;
+   char *recvBufP;
+   char *recvBufM;
+} HaloExchange;
 
 /// Create a HaloExchange for atom data.
 HaloExchange* initAtomHaloExchange(struct DomainSt* domain, struct LinkCellSt* boxes);
 
 /// Create a HaloExchange for force data.
-HaloExchange* initForceHaloExchange(struct DomainSt* domain, struct LinkCellSt* boxes);
+HaloExchange* initForceHaloExchange(struct DomainSt* domain, struct LinkCellSt* boxes, int useCPU);
 
 /// HaloExchange destructor.
 void destroyHaloExchange(HaloExchange** haloExchange);
@@ -82,5 +128,29 @@ void haloExchange(HaloExchange* haloExchange, void* data);
 
 /// Sort the atoms by gid in the specified link cell.
 void sortAtomsInCell(struct AtomsSt* atoms, struct LinkCellSt* boxes, int iBox);
+
+
+
+/// Package data for the force exchange.
+typedef struct ForceMsgSt
+{
+   real_t dfEmbed;
+}
+ForceMsg;
+
+/// Extra data members that are needed for the exchange of force data.
+/// For an force exchange, the HaloExchangeSt::parms will point to a
+/// structure of this type.
+typedef struct ForceExchangeParmsSt
+{
+   int nCells[6];     //!< Number of cells to send/recv for each face.
+   int* sendCells[6]; //!< List of link cells to send for each face.
+   int* sendCellsGpu[6]; //!< GPU List of link cells to send for each face.
+   int* recvCells[6]; //!< List of link cells to recv for each face.
+   int* recvCellsGpu[6]; //!< GPU List of link cells to recv for each face.
+   int* natoms_buf[6];    // temp buf for scan result
+   int* partial_sums[6];  // partial sums for scan
+}
+ForceExchangeParms;
 
 #endif

@@ -15,11 +15,11 @@
 /// \param [in] yproc y-size of domain decomposition grid.
 /// \param [in] zproc z-size of domain decomposition grid.
 /// \param [in] globalExtent Size of the simulation domain (in Angstroms).
-Domain* initDecomposition(int xproc, int yproc, int zproc, real3 globalExtent)
+Domain* initDecomposition(int xproc, int yproc, int zproc, real3_old globalExtent)
 {
    assert( xproc * yproc * zproc == getNRanks());
 
-   Domain* dd = comdMalloc(sizeof(Domain));
+   Domain* dd = (Domain*)comdMalloc(sizeof(Domain));
    dd->procGrid[0] = xproc;
    dd->procGrid[1] = yproc;
    dd->procGrid[2] = zproc;

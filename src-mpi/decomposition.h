@@ -14,18 +14,18 @@ typedef struct DomainSt
    int procCoord[3];       //!< i,j,k for this processor
 
    // global bounds data
-   real3 globalMin;        //!< minimum global coordinate (angstroms)
-   real3 globalMax;        //!< maximum global coordinate (angstroms)
-   real3 globalExtent;     //!< global size: globalMax - globalMin
+   real3_old globalMin;        //!< minimum global coordinate (angstroms)
+   real3_old globalMax;        //!< maximum global coordinate (angstroms)
+   real3_old globalExtent;     //!< global size: globalMax - globalMin
 
    // local bounds data
-   real3 localMin;         //!< minimum coordinate on local processor
-   real3 localMax;         //!< maximum coordinate on local processor
-   real3 localExtent;      //!< localMax - localMin
+   real3_old localMin;         //!< minimum coordinate on local processor
+   real3_old localMax;         //!< maximum coordinate on local processor
+   real3_old localExtent;      //!< localMax - localMin
 } Domain;
 
 struct DomainSt* initDecomposition(int xproc, int yproc, int zproc,
-                                   real3 globalExtent);
+                                   real3_old globalExtent);
 
 /// Find the MPI rank of a neighbor domain from a relative coordinate.
 int processorNum(Domain* domain, int dix, int diy, int dik);

@@ -10,6 +10,20 @@
 #include "linkCells.h"
 #include "decomposition.h"
 #include "initAtoms.h"
+#include "gpu_types.h"
+
+// windows 
+#if defined(_WIN32) || defined(_WIN64) 
+  #define snprintf _snprintf 
+  #define vsnprintf _vsnprintf 
+  #define strcasecmp _stricmp 
+  #define strncasecmp _strnicmp 
+  // use c++ for VS 2010
+  #define EXTERN_C extern "C"
+#else
+  // use c99 for linux
+  #define EXTERN_C extern
+#endif
 
 struct SimFlatSt;
 
@@ -37,7 +51,6 @@ typedef struct BasePotentialSt
    void (*print)(FILE* file, struct BasePotentialSt* pot);
    void (*destroy)(struct BasePotentialSt** pot); //!< destruction of the potential
 } BasePotential;
-
 
 /// species data: chosen to match the data found in the setfl/funcfl files
 typedef struct SpeciesDataSt
@@ -80,6 +93,103 @@ typedef struct SimFlatSt
 
    HaloExchange* atomExchange;
    
+   SimGpu host;		// host data for staging
+   SimGpu gpu;		// GPU data
+   // method for EAM: 
+   // 0 - thread per atom
+   // 1 - warp per atom
+   // 2 - cta per cell
+   // 3 - thread per atom using neighbor-list 
+   // 4 - cpu version using neighbor-list 
+   int method;
+
+   // latency hiding
+   int n_boundary_cells;	// note that this is 2-size boundary to allow overlap for atoms exchange
+   int *boundary_cells;		//<! Two most outer rings of the local cells
+   int *interior_cells;    //<! device array local cells excluding boundary_cells
+
+   int n_boundary1_cells;	// 1-size boundary - necessary for sorting only
+   int *boundary1_cells_d;	//<! boundary cells that are neighbors to halos (outer ring of the local Cells)
+   int *boundary1_cells_h;	//<! boundary cells that are neighbors to halos (outer ring of the local Cells)
+
+   // streams for async execution
+   cudaStream_t boundary_stream;	
+   cudaStream_t interior_stream;
+
+   // gpu options
+   int gpuAsync;
+   int gpuProfile;
+    
+   int *flags;			// flags for renumbering
+   int *tmp_sort;		// temp array for merge sort
+   char *gpu_atoms_buf;		// buffer for atoms exchange
+   char *gpu_force_buf;		// buffer for forces exchange
+   
 } SimFlat;
+
+/// Derived struct for a Lennard Jones potential.
+/// Polymorphic with BasePotential.
+/// \see BasePotential
+typedef struct LjPotentialSt
+{
+   real_t cutoff;          //!< potential cutoff distance in Angstroms
+   real_t mass;            //!< mass of atoms in intenal units
+   real_t lat;             //!< lattice spacing (angs) of unit cell
+   char latticeType[8];    //!< lattice type, e.g. FCC, BCC, etc.
+   char  name[3];          //!< element name
+   int   atomicNo;         //!< atomic number  
+   int  (*force)(SimFlat* s); //!< function pointer to force routine
+   void (*print)(FILE* file, BasePotential* pot);
+   void (*destroy)(BasePotential** pot); //!< destruction of the potential
+   real_t sigma;
+   real_t epsilon;
+} LjPotential;
+
+/// Pointers to the data that is needed in the load and unload functions
+/// for the force halo exchange.
+/// \see loadForceBuffer
+/// \see unloadForceBuffer
+typedef struct ForceExchangeDataSt
+{
+   real_t* dfEmbed; //<! derivative of embedding energy
+   struct LinkCellSt* boxes;
+}ForceExchangeData;
+
+/// Handles interpolation of tabular data.
+///
+/// \see initInterpolationObject
+/// \see interpolate
+typedef struct InterpolationObjectSt
+{
+   int n;          //!< the number of values in the table
+   real_t x0;      //!< the starting ordinate range
+   real_t invDx;   //!< the inverse of the table spacing
+   real_t* values; //!< the abscissa values
+} InterpolationObject;
+
+/// Derived struct for an EAM potential.
+/// Uses table lookups for function evaluation.
+/// Polymorphic with BasePotential.
+/// \see BasePotential
+typedef struct EamPotentialSt
+{
+   real_t cutoff;          //!< potential cutoff distance in Angstroms
+   real_t mass;            //!< mass of atoms in intenal units
+   real_t lat;             //!< lattice spacing (angs) of unit cell
+   char latticeType[8];    //!< lattice type, e.g. FCC, BCC, etc.
+   char  name[3];          //!< element name
+   int   atomicNo;         //!< atomic number  
+   int  (*force)(SimFlat* s); //!< function pointer to force routine
+   void (*print)(FILE* file, BasePotential* pot);
+   void (*destroy)(BasePotential** pot); //!< destruction of the potential
+   InterpolationObject* phi;  //!< Pair energy
+   InterpolationObject* rho;  //!< Electron Density
+   InterpolationObject* f;    //!< Embedding Energy
+
+   real_t* rhobar;        //!< per atom storage for rhobar
+   real_t* dfEmbed;       //!< per atom storage for derivative of Embedding
+   HaloExchange* forceExchange;
+   ForceExchangeData* forceExchangeData;
+} EamPotential;
 
 #endif

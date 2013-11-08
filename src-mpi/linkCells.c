@@ -11,6 +11,10 @@
 #include "parallel.h"
 #include "memUtils.h"
 #include "decomposition.h"
+#include "defines.h"
+#include "hashTable.h"
+#include "mytype.h"
+#include "neighborList.h"
 #include "performanceTimers.h"
 #include "CoMDTypes.h"
 
@@ -18,9 +22,8 @@
 #define   MAX(A,B) ((A) > (B) ? (A) : (B))
 
 static void copyAtom(LinkCell* boxes, Atoms* atoms, int iAtom, int iBox, int jAtom, int jBox);
-static int getBoxFromCoord(LinkCell* boxes, real_t rr[3]);
-static void emptyHaloCells(LinkCell* boxes);
 static void getTuple(LinkCell* boxes, int iBox, int* ixp, int* iyp, int* izp);
+EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
 
 /// In CoMD 1.1, atoms are stored in link cells.  Link cells are widely
 /// used in classical MD to avoid an O(N^2) search for atoms that
@@ -82,7 +85,7 @@ static void getTuple(LinkCell* boxes, int iBox, int* ixp, int* iyp, int* izp);
 LinkCell* initLinkCells(const Domain* domain, real_t cutoff)
 {
    assert(domain);
-   LinkCell* ll = comdMalloc(sizeof(LinkCell));
+   LinkCell* ll = (LinkCell*)comdMalloc(sizeof(LinkCell));
 
    for (int i = 0; i < 3; i++)
    {
@@ -101,7 +104,7 @@ LinkCell* initLinkCells(const Domain* domain, real_t cutoff)
 
    ll->nTotalBoxes = ll->nLocalBoxes + ll->nHaloBoxes;
    
-   ll->nAtoms = comdMalloc(ll->nTotalBoxes*sizeof(int));
+   ll->nAtoms = (int*)comdMalloc(ll->nTotalBoxes*sizeof(int));
    for (int iBox=0; iBox<ll->nTotalBoxes; ++iBox)
       ll->nAtoms[iBox] = 0;
 
@@ -152,7 +155,8 @@ int getNeighborBoxes(LinkCell* boxes, int iBox, int* nbrBoxes)
 /// \param [in] px    The x-component of the atom's momentum.
 /// \param [in] py    The y-component of the atom's momentum.
 /// \param [in] pz    The z-component of the atom's momentum.
-void putAtomInBox(LinkCell* boxes, Atoms* atoms,
+/// \return offset of this particle within the atoms structure
+int putAtomInBox(LinkCell* boxes, Atoms* atoms,
                   const int gid, const int iType,
                   const real_t x,  const real_t y,  const real_t z,
                   const real_t px, const real_t py, const real_t pz)
@@ -171,13 +175,50 @@ void putAtomInBox(LinkCell* boxes, Atoms* atoms,
    atoms->gid[iOff] = gid;
    atoms->iSpecies[iOff] = iType;
    
-   atoms->r[iOff][0] = x;
-   atoms->r[iOff][1] = y;
-   atoms->r[iOff][2] = z;
+   atoms->r.x[iOff] = x;
+   atoms->r.y[iOff] = y;
+   atoms->r.z[iOff] = z;
    
-   atoms->p[iOff][0] = px;
-   atoms->p[iOff][1] = py;
-   atoms->p[iOff][2] = pz;
+   atoms->p.x[iOff] = px;
+   atoms->p.y[iOff] = py;
+   atoms->p.z[iOff] = pz;
+
+   return iOff;
+}
+
+/// \details
+/// Updates the partile at position iOff within the atoms structure.
+/// \param [in] gid   The global of the atom.
+/// \param [in] iType The species index of the atom.
+/// \param [in] x     The x-coordinate of the atom.
+/// \param [in] y     The y-coordinate of the atom.
+/// \param [in] z     The z-coordinate of the atom.
+/// \param [in] px    The x-component of the atom's momentum.
+/// \param [in] py    The y-component of the atom's momentum.
+/// \param [in] pz    The z-component of the atom's momentum.
+/// \param [in] iOff  The position within the atoms structure where this particle should be stored.
+void updateAtomInBoxAt(LinkCell* boxes, Atoms* atoms,
+                  const int gid, const int iType,
+                  const real_t x,  const real_t y,  const real_t z,
+                  const real_t px, const real_t py, const real_t pz,
+                  const int iOff)
+{
+   
+   
+   int iBox = iOff/MAXATOMS;
+   boxes->nAtoms[iBox]++;
+
+   atoms->gid[iOff] = gid;
+   atoms->iSpecies[iOff] = iType;
+
+
+   atoms->r.x[iOff] = x;
+   atoms->r.y[iOff] = y;
+   atoms->r.z[iOff] = z;
+   
+   atoms->p.x[iOff] = px;
+   atoms->p.y[iOff] = py;
+   atoms->p.z[iOff] = pz;
 }
 
 /// Calculates the link cell index from the grid coords.  The valid
@@ -270,7 +311,7 @@ void moveAtom(LinkCell* boxes, Atoms* atoms, int iId, int iBox, int jBox)
 /// to halo atoms.  Such atom must be sent to other tasks by a halo
 /// exchange to avoid being lost.
 /// \see redistributeAtoms
-void updateLinkCells(LinkCell* boxes, Atoms* atoms)
+void updateLinkCellsCpu(LinkCell* boxes, Atoms* atoms)
 {
    emptyHaloCells(boxes);
    
@@ -280,7 +321,12 @@ void updateLinkCells(LinkCell* boxes, Atoms* atoms)
       int ii=0;
       while (ii < boxes->nAtoms[iBox])
       {
-         int jBox = getBoxFromCoord(boxes, atoms->r[iOff+ii]);
+         real3_old rr;
+         rr[0] = atoms->r.x[iOff+ii];
+         rr[1] = atoms->r.y[iOff+ii];
+         rr[2] = atoms->r.z[iOff+ii];
+         int jBox = getBoxFromCoord(boxes, rr);
+
          if (jBox != iBox)
             moveAtom(boxes, atoms, ii, iBox, jBox);
          else
@@ -314,9 +360,9 @@ void copyAtom(LinkCell* boxes, Atoms* atoms, int iAtom, int iBox, int jAtom, int
    const int jOff = MAXATOMS*jBox+jAtom;
    atoms->gid[jOff] = atoms->gid[iOff];
    atoms->iSpecies[jOff] = atoms->iSpecies[iOff];
-   memcpy(atoms->r[jOff], atoms->r[iOff], sizeof(real3));
-   memcpy(atoms->p[jOff], atoms->p[iOff], sizeof(real3));
-   memcpy(atoms->f[jOff], atoms->f[iOff], sizeof(real3));
+   copyVec(&(atoms->r), iOff, jOff);
+   copyVec(&(atoms->p), iOff, jOff);
+   copyVec(&(atoms->f), iOff, jOff); //TODO is this required?
    memcpy(atoms->U+jOff,  atoms->U+iOff,  sizeof(real_t));
 }
 
@@ -453,4 +499,39 @@ void getTuple(LinkCell* boxes, int iBox, int* ixp, int* iyp, int* izp)
    *izp = iz;
 }
 
+void emptyBoundaryCells(LinkCell* boxes, int *boundaryCellList, int nBoundaryCells)
+{
+   for (int i=0; i<nBoundaryCells; ++i)
+           boxes->nAtoms[boundaryCellList[i]] = 0;
+}
 
+void updateGpuBoundaryCells(SimFlat *sim)
+{
+      for(int i = 0; i < sim->n_boundary1_cells; ++i)
+      {
+              int iBox = sim->boundary1_cells_h[i];
+              int f_size = sim->boxes->nAtoms[iBox] * sizeof(real_t);
+              int i_size = sim->boxes->nAtoms[iBox] * sizeof(int);
+              for(int ii=0; ii<sim->boxes->nAtoms[iBox];++ii)
+              {
+                      int iOff = iBox*MAXATOMS + ii;
+                      sim->host.atoms.r.x[iOff] = sim->atoms->r.x[iOff];
+                      sim->host.atoms.r.y[iOff] = sim->atoms->r.y[iOff];
+                      sim->host.atoms.r.z[iOff] = sim->atoms->r.z[iOff];
+
+                      sim->host.atoms.p.x[iOff] = sim->atoms->p.x[iOff];
+                      sim->host.atoms.p.y[iOff] = sim->atoms->p.y[iOff];
+                      sim->host.atoms.p.z[iOff] = sim->atoms->p.z[iOff];
+
+              }
+              cudaMemcpy((sim->gpu.atoms.r.x)+(iBox*MAXATOMS), (sim->host.atoms.r.x)+(iBox*MAXATOMS), f_size, cudaMemcpyHostToDevice);
+              cudaMemcpy((sim->gpu.atoms.r.y)+(iBox*MAXATOMS), (sim->host.atoms.r.y)+(iBox*MAXATOMS), f_size, cudaMemcpyHostToDevice);
+              cudaMemcpy((sim->gpu.atoms.r.z)+(iBox*MAXATOMS), (sim->host.atoms.r.z)+(iBox*MAXATOMS), f_size, cudaMemcpyHostToDevice);
+              cudaMemcpy((sim->gpu.atoms.p.x)+(iBox*MAXATOMS), (sim->host.atoms.p.x)+(iBox*MAXATOMS), f_size, cudaMemcpyHostToDevice);
+              cudaMemcpy((sim->gpu.atoms.p.y)+(iBox*MAXATOMS), (sim->host.atoms.p.y)+(iBox*MAXATOMS), f_size, cudaMemcpyHostToDevice);
+              cudaMemcpy((sim->gpu.atoms.p.z)+(iBox*MAXATOMS), (sim->host.atoms.p.z)+(iBox*MAXATOMS), f_size, cudaMemcpyHostToDevice);
+
+              cudaMemcpy((sim->gpu.atoms.gid)+(iBox*MAXATOMS), (sim->atoms->gid)+(iBox*MAXATOMS), i_size, cudaMemcpyHostToDevice);
+              cudaMemcpy((sim->gpu.atoms.iSpecies)+(iBox*MAXATOMS), (sim->atoms->iSpecies)+(iBox*MAXATOMS), i_size, cudaMemcpyHostToDevice);
+      }
+}
