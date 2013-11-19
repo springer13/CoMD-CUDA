@@ -6,6 +6,10 @@
 #define BOUNDARY 1
 #define INTERIOR 2
 
+#define ISPOWER2(v) ((v) && !((v) & ((v) - 1)))
+            
+#define IDX3D(x,y,z,X,Y) ((z)*((Y)*(X)) + ((y)*(X)) + (x))
+
 /// The maximum number of atoms that can be stored in a link cell.
 #define MAXATOMS 64 
 

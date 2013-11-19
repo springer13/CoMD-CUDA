@@ -77,7 +77,7 @@ int getBoxFromTuple(LinkCellGpu boxes, int ix, int iy, int iz)
    // local link celll.
    else
    {
-      iBox = ix + boxes.gridSize.x * iy + boxes.gridSize.x * boxes.gridSize.y * iz;
+      iBox = boxes.boxIDLookUp[IDX3D(ix,iy,iz, boxes.gridSize.x, boxes.gridSize.y)];
    }
 
    return iBox;

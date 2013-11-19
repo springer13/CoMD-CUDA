@@ -25,6 +25,43 @@ static void copyAtom(LinkCell* boxes, Atoms* atoms, int iAtom, int iBox, int jAt
 static void getTuple(LinkCell* boxes, int iBox, int* ixp, int* iyp, int* izp);
 EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
 
+int computeHilbertCode(int x, int y, int z) //TODO: This piece of code has been take and modified from: http://codereview.stackexchange.com/questions/26671/faster-3d-hilbert-curve-in-c (add citation)
+{
+  const int nbits = sizeof(int) > sizeof(int) ? 20 : 10; // nbits is the curve order.
+  const int transform[8] = {0, 1, 7, 6, 3, 2, 4, 5};
+
+  int s = 0;
+
+  for( int i = nbits - 1; i >= 0; i-- ) {
+    int xi = ((int)((x)>>i))&1;
+    int yi = ((int)((y)>>i))&1;
+    int zi = ((int)((z)>>i))&1;
+
+    int index = (xi<<2) + (yi<<1) + zi;
+    s = (s<<3) + transform[index];
+
+    if( index==0 ) {
+      int temp = z; z = y; y = temp; //swap y and z
+    } else if( index==1 ) {
+      int temp = x; x = y; y = temp; //swap x and y
+    } else if( index==2 ) {
+      int temp = (z)^(-1); z = (y)^(-1); y = temp; //swap and complement z and y
+    } else if( index==3 ) {
+      int temp = (x)^(-1); x = (y)^(-1); y = temp; //swap and complement x and y
+    } else if( index==4 ) {
+      x = (x)^(-1); z = (z)^(-1); // complement z and x
+    } else if( index==5 ) {
+      int temp = x; x = y; y = temp; //swap x and y
+    } else if( index==6 ) {
+      x = (x)^(-1); z = (z)^(-1); // complement z and x
+    } else if( index==7 ) {
+      int temp = (x)^(-1); x = (y)^(-1); y = temp; //swap and complement x and y
+    }
+  }
+
+  return s;
+}
+
 /// In CoMD 1.1, atoms are stored in link cells.  Link cells are widely
 /// used in classical MD to avoid an O(N^2) search for atoms that
 /// interact.  Link cells are formed by subdividing the local spatial
@@ -82,7 +119,7 @@ EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
 /// \see getTuple is the 1D->3D mapping
 ///
 /// \param [in] cutoff The cutoff distance of the potential.
-LinkCell* initLinkCells(const Domain* domain, real_t cutoff)
+LinkCell* initLinkCells(const Domain* domain, real_t cutoff, int useHilbert)
 {
    assert(domain);
    LinkCell* ll = (LinkCell*)comdMalloc(sizeof(LinkCell));
@@ -103,6 +140,31 @@ LinkCell* initLinkCells(const Domain* domain, real_t cutoff)
                          (ll->gridSize[1] * ll->gridSize[2]));
 
    ll->nTotalBoxes = ll->nLocalBoxes + ll->nHaloBoxes;
+
+   if(useHilbert && !(ISPOWER2(ll->gridSize[0]) && ISPOWER2(ll->gridSize[1]) && ISPOWER2(ll->gridSize[2]))){
+      useHilbert = 0;
+      printf("WARNING: We are NOT using space-filling curves because the grid-dimension is not a power of two. (this feature needs to be implemented)\n");
+   }
+
+   ll->boxIDLookUpReverse = (int3_t*) comdMalloc(ll->nLocalBoxes * sizeof(int3_t)); //!< 1D array storing the tuple for a given box ID 
+   ll->boxIDLookUp = (int*) comdMalloc(ll->gridSize[0] * ll->gridSize[1] * ll->gridSize[2] * sizeof(int));
+   for(int i = 0; i < ll->gridSize[2]; ++i){
+      for(int j = 0; j < ll->gridSize[1]; ++j){
+         for(int k = 0; k < ll->gridSize[0]; ++k){
+            int idx = IDX3D(k,j,i,ll->gridSize[0],ll->gridSize[1]);
+            int boxID;
+            if(useHilbert == 1)
+              boxID = computeHilbertCode(k,j,i);
+            else
+              boxID = idx;
+            assert(boxID < ll->nLocalBoxes);
+            ll->boxIDLookUp[idx] = boxID; 
+            ll->boxIDLookUpReverse[boxID].x = k;
+            ll->boxIDLookUpReverse[boxID].y = j;
+            ll->boxIDLookUpReverse[boxID].z = i;
+         }
+      }
+   }
    
    ll->nAtoms = (int*)comdMalloc(ll->nTotalBoxes*sizeof(int));
    for (int iBox=0; iBox<ll->nTotalBoxes; ++iBox)
@@ -268,7 +330,7 @@ int getBoxFromTuple(LinkCell* boxes, int ix, int iy, int iz)
    // local link celll.
    else
    {
-      iBox = ix + gridSize[0]*iy + gridSize[0]*gridSize[1]*iz;
+      iBox = boxes->boxIDLookUp[IDX3D(ix,iy,iz, gridSize[0],gridSize[1])];
    }
    assert(iBox >= 0);
    assert(iBox < boxes->nTotalBoxes);
@@ -433,10 +495,9 @@ void getTuple(LinkCell* boxes, int iBox, int* ixp, int* iyp, int* izp)
    // If a local box
    if( iBox < boxes->nLocalBoxes)
    {
-      ix = iBox % gridSize[0];
-      iBox /= gridSize[0];
-      iy = iBox % gridSize[1];
-      iz = iBox / gridSize[1];
+      ix = boxes->boxIDLookUpReverse[iBox].x;
+      iy = boxes->boxIDLookUpReverse[iBox].y;
+      iz = boxes->boxIDLookUpReverse[iBox].z;
    }
    // It's a halo box
    else 

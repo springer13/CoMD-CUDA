@@ -58,6 +58,7 @@ char* timerName[numberOfTimers] = {
    "timestep",
    "  position",
    "  velocity",
+   "  neighborList",
    "  redistribute",
    "    atomHalo",
    "  force",

@@ -231,7 +231,7 @@ SimFlat* initSimulation(Command cmd)
                   printf("Skin-Distance: %f\n",skinDistance);
    } else
           skinDistance = 0.0;
-   sim->boxes = initLinkCells(sim->domain, sim->pot->cutoff + skinDistance);
+   sim->boxes = initLinkCells(sim->domain, sim->pot->cutoff + skinDistance, cmd.doHilbert);
    sim->atoms = initAtoms(sim->boxes, skinDistance);
 
    // create lattice with desired temperature and displacement.
