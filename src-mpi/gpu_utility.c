@@ -27,6 +27,7 @@
  ************************************************************************/
 
 #include <cuda.h>
+#include <assert.h>
 
 #include "defines.h"
 #include "gpu_utility.h"
@@ -351,13 +352,13 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
   }
 
   int total_boxes = sim->boxes->nTotalBoxes;
-  int local_boxes = sim->boxes->nLocalBoxes;
+  int nLocalBoxes = sim->boxes->nLocalBoxes;
   int r_size = total_boxes * MAXATOMS * sizeof(real_t);
-  int f_size = local_boxes * MAXATOMS * sizeof(real_t);
+  int f_size = nLocalBoxes * MAXATOMS * sizeof(real_t);
   int num_species = 1;
 
 
-  for (int iBox=0; iBox < local_boxes; iBox++) {
+  for (int iBox=0; iBox < nLocalBoxes; iBox++) {
     getNeighborBoxes(sim->boxes, iBox, host->neighbor_cells + iBox * N_MAX_NEIGHBORS);
 
     // find itself and put first
@@ -371,7 +372,7 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
   }
 
   // prepare neighbor list
-  for (int iBox=0; iBox < local_boxes; iBox++) {
+  for (int iBox=0; iBox < nLocalBoxes; iBox++) {
     int num_neigh_atoms = 0;
     for (int j = 0; j < N_MAX_NEIGHBORS; j++) {
       int jBox = host->neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
@@ -421,16 +422,18 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
   cudaMemcpy(gpu->atoms.p.y, sim->atoms->p.y, r_size, cudaMemcpyHostToDevice);
   cudaMemcpy(gpu->atoms.p.z, sim->atoms->p.z, r_size, cudaMemcpyHostToDevice);
 
-  cudaMemcpy(gpu->atoms.iSpecies, sim->atoms->iSpecies, local_boxes * MAXATOMS * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu->atoms.iSpecies, sim->atoms->iSpecies, nLocalBoxes * MAXATOMS * sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu->atoms.gid, sim->atoms->gid, total_boxes * MAXATOMS * sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemcpy(gpu->species_mass, host->species_mass, num_species * sizeof(real_t), cudaMemcpyHostToDevice);
 
-  cudaMemcpy(gpu->neighbor_cells, host->neighbor_cells, local_boxes * N_MAX_NEIGHBORS * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(gpu->neighbor_atoms, host->neighbor_atoms, local_boxes * N_MAX_NEIGHBORS * MAXATOMS * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(gpu->num_neigh_atoms, host->num_neigh_atoms, local_boxes * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu->neighbor_cells, host->neighbor_cells, nLocalBoxes * N_MAX_NEIGHBORS * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu->neighbor_atoms, host->neighbor_atoms, nLocalBoxes * N_MAX_NEIGHBORS * MAXATOMS * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu->num_neigh_atoms, host->num_neigh_atoms, nLocalBoxes * sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemcpy(gpu->boxes.nAtoms, sim->boxes->nAtoms, total_boxes * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu->boxes.boxIDLookUp, sim->boxes->boxIDLookUp, nLocalBoxes * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(gpu->boxes.boxIDLookUpReverse, sim->boxes->boxIDLookUpReverse, nLocalBoxes * sizeof(int3_t), cudaMemcpyHostToDevice);
 
   cudaMemcpy(gpu->a_list.atoms, host->a_list.atoms, n_total * sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu->a_list.cells, host->a_list.cells, n_total * sizeof(int), cudaMemcpyHostToDevice);
@@ -614,5 +617,8 @@ void initLinkCellsGpu(SimFlat *sim, LinkCellGpu* boxes)
   boxes->invBoxSize.y = sim->boxes->invBoxSize[1];
   boxes->invBoxSize.z = sim->boxes->invBoxSize[2];
 
+  assert (sim->boxes->nLocalBoxes == sim->boxes->gridSize[0] * sim->boxes->gridSize[1] * sim->boxes->gridSize[2]);
   cudaMalloc((void**)&boxes->nAtoms, sim->boxes->nTotalBoxes * sizeof(int));
+  cudaMalloc((void**)&boxes->boxIDLookUpReverse, sim->boxes->nLocalBoxes * sizeof(int3_t));
+  cudaMalloc((void**)&boxes->boxIDLookUp, sim->boxes->nLocalBoxes * sizeof(int));
 }

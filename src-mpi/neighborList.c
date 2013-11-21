@@ -121,7 +121,9 @@ void buildNeighborListCpu(SimFlat* s)
                    for (int jTmp=0; jTmp<nNbrBoxes; jTmp++)
                    {
                            int jBox = nbrBoxes[jTmp];
+#ifndef FULLLIST 
                            if (jBox < iBox ) continue;
+#endif
 
                            int nJBox = s->boxes->nAtoms[jBox];
                            // loop over atoms in iBox
@@ -138,7 +140,11 @@ void buildNeighborListCpu(SimFlat* s)
                                    // loop over atoms in jBox
                                    for (int jOff=MAXATOMS*jBox,ij=0; ij<nJBox; ij++,jOff++)
                                    {
-                                           if ( (iBox==jBox) &&(ij <= ii) ) continue;
+#ifndef FULLLIST 
+                                           if ( (iBox==jBox) && (ij <= ii) ) continue;
+#else
+                                           if ( (iBox==jBox) && ij == ii ) continue;
+#endif
 
                                            real_t r2 = 0.0;
                                            real3_old dr;

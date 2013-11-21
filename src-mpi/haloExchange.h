@@ -5,7 +5,7 @@
 #define __HALO_EXCHANGE_
 
 #include "mytype.h"
-#include "cuda_runtime.h"
+#include <cuda_runtime.h>
 
 struct AtomsSt;
 struct LinkCellSt;

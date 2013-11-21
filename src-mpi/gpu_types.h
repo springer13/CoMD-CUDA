@@ -88,6 +88,9 @@ typedef struct LinkCellGpuSt
   real3_t localMax;
   real3_t invBoxSize;
 
+   int *boxIDLookUp; //!< 3D array storing the box IDs 
+   int3_t *boxIDLookUpReverse; //!< 1D array storing the tuple for a given box ID 
+
   int *nAtoms;		// number of atoms per cell
 } LinkCellGpu;
 

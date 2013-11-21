@@ -6,8 +6,8 @@
 #include <stdio.h>
 
 /// Timer handles
-enum TimerHandle{totalTimer, loopTimer, timestepTimer,neighborListBuildTimer,
-                 positionTimer, velocityTimer,  redistributeTimer,
+enum TimerHandle{totalTimer, loopTimer, timestepTimer,
+                 positionTimer, velocityTimer,  neighborListBuildTimer, redistributeTimer,
                  atomHaloTimer, computeForceTimer, eamHaloTimer,
                  commHaloTimer, commReduceTimer, numberOfTimers};
 

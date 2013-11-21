@@ -24,10 +24,13 @@ typedef struct LinkCellSt
    real3_old boxSize;       //!< size of box in each dimension
    real3_old invBoxSize;    //!< inverse size of box in each dimension
 
+   int *boxIDLookUp; //!< 3D array storing the box IDs 
+   int3_t *boxIDLookUpReverse; //!< 1D array storing the tuple for a given box ID 
+
    int* nAtoms;         //!< total number of atoms in each box
 } LinkCell;
 
-LinkCell* initLinkCells(const struct DomainSt* domain, real_t cutoff);
+LinkCell* initLinkCells(const struct DomainSt* domain, real_t cutoff, int useHilbert);
 void destroyLinkCells(LinkCell** boxes);
 
 int getNeighborBoxes(LinkCell* boxes, int iBox, int* nbrBoxes);

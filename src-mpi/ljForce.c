@@ -64,6 +64,7 @@
 #include "mytype.h"
 #include "ljForce.h"
 
+#include <float.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
@@ -83,7 +84,7 @@
 EXTERN_C void ljForceGpu(SimGpu sim);
 
 static int ljForce(SimFlat* s);
-static int ljForceCpuNL(SimFlat* sim);
+int ljForceCpuNL(SimFlat* sim);
 static void ljPrint(FILE* file, BasePotential* pot);
 
 void ljDestroy(BasePotential** inppot)
@@ -199,8 +200,6 @@ int ljForceCpuNL(SimFlat* sim)
                    int* iNeighborList = &(neighborList->list[neighborList->maxNeighbors * iLid]);
                    const int nNeighbors = neighborList->nNeighbors[iLid];
                    // loop over atoms in neighborlist
-#pragma vector always
-#pragma ivdep
                    for (int ij=0; ij<nNeighbors; ij++)
                    {
                            int jOff = iNeighborList[ij];
@@ -209,6 +208,9 @@ int ljForceCpuNL(SimFlat* sim)
                            real_t dry = iry - ry[jOff];
                            real_t drz = irz - rz[jOff];
                            real_t r2 = drx*drx + dry*dry + drz*drz;
+#ifdef FULLLIST
+                           if(jOff == iOff) r2 = FLT_MAX;
+#endif
 
 
                            real_t fr = 0.0;
@@ -230,10 +232,12 @@ int ljForceCpuNL(SimFlat* sim)
                              ify -= dry*fr;
                              ifz -= drz*fr;
                            }
+#ifndef FULLLIST
                            U[jOff] += eLocal;
                            fx[jOff] += drx*fr;
                            fy[jOff] += dry*fr;
                            fz[jOff] += drz*fr;
+#endif
                    } // loop over atoms in neighborlist
                    U[iOff] += iU;
                    fx[iOff] += ifx;
