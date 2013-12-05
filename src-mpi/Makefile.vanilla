@@ -1,6 +1,9 @@
-# Makefile for src-parallel
+# Makefile for CUDA version
 
 SHELL = /bin/bash
+
+### Specify CUDA path here if necessary
+CUDA_HOME ?= $(CUDA_PATH)
 
 ### CoMD can be built in either double or single precision and with or
 ### without MPI.  Select desired precision and MPI here.
@@ -29,11 +32,27 @@ MPI_INCLUDE =
 
 ### A place to specify any other include or library switches your
 ### platform requires.
-OTHER_LIB =
-OTHER_INCLUDE =
+OTHER_LIB = -L$(CUDA_HOME)/lib64 -lcudart
+OTHER_INCLUDE = -I$(CUDA_HOME)/include
 
+### CUDA targets
 
+# support sm20 & sm35
+NVCC_FLAGS += -gencode arch=compute_35,code=compute_35 --ptxas-options=-v -lineinfo
+NVCC_FLAGS += -gencode arch=compute_20,code=compute_20 --ptxas-options=-v -lineinfo
 
+# set up nvcc compiler path
+NVCC = $(CUDA_HOME)/bin/nvcc
+
+# add precision flag for CUDA targets
+ifeq ($(DOUBLE_PRECISION), ON)
+NVCC_FLAGS += -DDOUBLE
+else
+NVCC_FLAGS += -DSINGLE
+endif
+
+# specify optimization flags
+NVCC_FLAGS += -O2
 
 #########################################
 ### Below here, it is pitch black.  
@@ -43,7 +62,7 @@ OTHER_INCLUDE =
 # clear all suffixes
 .SUFFIXES:
 # list only those that we use 
-.SUFFIXES: .c .o
+.SUFFIXES: .c .cu .o
 
 .PHONY: DEFAULT clean distclean depend
 
@@ -57,9 +76,9 @@ CFLAGS += -DSINGLE
 endif
 
 # Set executable name and add includes & libraries for MPI if needed.
-CoMD_VARIANT = CoMD-serial
+CoMD_VARIANT = CoMD-cuda
 ifeq ($(DO_MPI), ON)
-CoMD_VARIANT = CoMD-mpi
+CoMD_VARIANT = CoMD-cuda-mpi
 INCLUDES += ${MPI_INCLUDE}
 CFLAGS += -DDO_MPI
 LDFLAGS += ${MPI_LIB}
@@ -69,18 +88,24 @@ CoMD_EXE = ${BIN_DIR}/${CoMD_VARIANT}
 LDFLAGS += ${C_LIB} ${OTHER_LIB}
 CFLAGS  += ${OPTFLAGS} ${INCLUDES} ${OTHER_INCLUDE}
 
-
+# c files to be compiled with mpicc
 SOURCES=$(wildcard *.c)
 OBJECTS=$(SOURCES:.c=.o)
 
+# cuda files to be compiled with nvcc
+CU_SOURCES=$(wildcard *.cu)
+CU_OBJECTS=$(CU_SOURCES:.cu=.cu.o)
 
 DEFAULT: ${CoMD_EXE}
+
+%.cu.o: %.cu
+	${NVCC} -c $< ${NVCC_FLAGS} -o $@
 
 %.o: %.c
 	${CC} ${CFLAGS} -c $< -o $@
 
-${CoMD_EXE}: ${BIN_DIR} CoMD_info.h ${OBJECTS} 
-	${CC} ${CFLAGS} -o ${CoMD_EXE} ${OBJECTS} ${LDFLAGS}
+${CoMD_EXE}: ${BIN_DIR} CoMD_info.h ${OBJECTS} ${CU_OBJECTS}
+	${CC} ${CFLAGS} -o ${CoMD_EXE} ${OBJECTS} ${CU_OBJECTS} ${LDFLAGS}
 
 CoMD_info.h: Makefile
 	./generate_info_header ${CoMD_VARIANT} "$(CC)" "$(CFLAGS)" "$(LDFLAGS)"
@@ -95,14 +120,9 @@ distclean: clean
 	rm -f ${CoMD_EXE} .depend.bak
 	rm -rf html latex
 
-.depend: $(SOURCES)
-	@touch .depend
-	@$(MAKE) --no-print-directory depend
-
 depend:
-	@echo "Rebuilding dependencies..."
-	@$(MAKE) CoMD_info.h
-	@makedepend -f .depend -Y. --$(CFLAGS)-- $(SOURCES) 2> /dev/null
-
+	touch .depend
+	makedepend -f .depend -Y. --$(CFLAGS)-- $(SOURCES) 2> /dev/null
+	makedepend -a -f .depend -Y. -o.cu.o --$(CFLAGS)-- $(CU_SOURCES) 2> /dev/null
 
 -include .depend
