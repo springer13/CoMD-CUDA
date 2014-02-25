@@ -622,3 +622,80 @@ void initLinkCellsGpu(SimFlat *sim, LinkCellGpu* boxes)
   cudaMalloc((void**)&boxes->boxIDLookUpReverse, sim->boxes->nLocalBoxes * sizeof(int3_t));
   cudaMalloc((void**)&boxes->boxIDLookUp, sim->boxes->nLocalBoxes * sizeof(int));
 }
+
+void AnalyzeInput(SimFlat *sim)
+{
+  // copy positions data to host for all cells (including halos)
+  cudaMemcpy(sim->boxes->nAtoms, sim->gpu.boxes.nAtoms, sim->boxes->nTotalBoxes * sizeof(int), cudaMemcpyDeviceToHost);
+  int f_size = sim->boxes->nTotalBoxes * MAXATOMS * sizeof(real_t);
+  cudaMemcpy(sim->atoms->r.x, sim->gpu.atoms.r.x, f_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(sim->atoms->r.y, sim->gpu.atoms.r.y, f_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(sim->atoms->r.z, sim->gpu.atoms.r.z, f_size, cudaMemcpyDeviceToHost);
+  sim->host.atoms.neighborList.nNeighbors = (int*)malloc(sim->atoms->nLocal * sizeof(int));
+  cudaMemcpy(sim->host.atoms.neighborList.nNeighbors, sim->gpu.atoms.neighborList.nNeighbors, sim->atoms->nLocal * sizeof(int), cudaMemcpyDeviceToHost);
+
+  GetDataFromGpu(sim);
+
+  int size = MAXATOMS * N_MAX_NEIGHBORS;
+
+  // atoms per cell
+  int atoms_per_cell_hist[size];      
+  memset(atoms_per_cell_hist, 0, size * sizeof(int));
+  for (int iBox = 0; iBox < sim->boxes->nLocalBoxes; iBox++) 
+    atoms_per_cell_hist[sim->boxes->nAtoms[iBox]]++;
+
+  // cell neighbors 
+  int cell_neigh_hist[size];
+  memset(cell_neigh_hist, 0, size * sizeof(int));
+  for (int iBox = 0; iBox < sim->boxes->nLocalBoxes; iBox++) {
+    int neighbor_atoms = 0;
+    for (int j = 0; j < N_MAX_NEIGHBORS; j++) {
+      int jBox = sim->host.neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
+      neighbor_atoms += sim->boxes->nAtoms[jBox];
+    }
+    cell_neigh_hist[neighbor_atoms] += sim->boxes->nAtoms[iBox];
+  }
+
+  // find # of atoms in neighbor lists (cut-off + skin distance)
+  int neigh_lists_hist[size];
+  memset(neigh_lists_hist, 0, size * sizeof(int));
+#if 0
+  int id = 0;
+  for (int i = 0; i < sim->atoms->nLocal; i++) 
+      neigh_lists_hist[sim->host.atoms.neighborList.nNeighbors[i]]++;
+#endif
+
+  // find # of neighbors strictly under cut-off
+  int passed_cutoff_hist[size];      
+  memset(passed_cutoff_hist, 0, size * sizeof(int));
+  for (int iBox = 0; iBox < sim->boxes->nLocalBoxes; iBox++) {
+    for (int iAtom = 0; iAtom < sim->boxes->nAtoms[iBox]; iAtom++) {
+      int passed_atoms = 0;
+      for (int j = 0; j < N_MAX_NEIGHBORS; j++) {
+        int jBox = sim->host.neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
+        for (int jAtom = 0; jAtom < sim->boxes->nAtoms[jBox]; jAtom++) 
+        {
+          int i_particle = iBox * MAXATOMS + iAtom;
+          int j_particle = jBox * MAXATOMS + jAtom;
+
+          real_t dx = sim->atoms->r.x[i_particle] - sim->atoms->r.x[j_particle];
+          real_t dy = sim->atoms->r.y[i_particle] - sim->atoms->r.y[j_particle];
+          real_t dz = sim->atoms->r.z[i_particle] - sim->atoms->r.z[j_particle];
+
+          real_t r2 = dx*dx + dy*dy + dz*dz;
+
+          // TODO: this is only works for EAM potential
+          if (r2 < sim->gpu.eam_pot.cutoff * sim->gpu.eam_pot.cutoff)
+            passed_atoms++;
+        }
+      }
+      passed_cutoff_hist[passed_atoms]++;
+    }
+  }
+
+  FILE *file = fopen("histogram.csv", "w");
+  fprintf(file,"# of atoms,cell size = cutoff,neighbor cells,cutoff = 4.95 + 10%%,cutoff = 4.95,\n");
+  for(int i = 0; i < size; i++)
+    fprintf(file,"%i,%i,%i,%i,%i,\n", i,atoms_per_cell_hist[i],cell_neigh_hist[i],neigh_lists_hist[i],passed_cutoff_hist[i]);
+  fclose(file);
+}

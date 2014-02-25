@@ -269,6 +269,12 @@ SimFlat* initSimulation(Command cmd)
    if(useNL){
       buildNeighborList(sim,0);
    }
+ 
+#if 0
+   // analyze input distribution, note this is done on CPU (slow)
+   AnalyzeInput(sim);
+#endif
+
    startTimer(computeForceTimer);
    computeForce(sim);
    stopTimer(computeForceTimer);
