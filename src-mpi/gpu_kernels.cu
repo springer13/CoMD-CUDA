@@ -434,14 +434,13 @@ void buildAtomListGpu(SimFlat *sim, cudaStream_t stream)
 extern "C"
 void unloadAtomsBufferToGpu(char *buf, int nBuf, SimFlat *sim, char *gpu_buf, cudaStream_t stream)
 {
-
   cudaMemcpyAsync(gpu_buf, buf, nBuf * sizeof(AtomMsg), cudaMemcpyHostToDevice, stream);
 
+  // TODO: don't need to check if we're running cell-based approach
   int nlUpdateRequired = neighborListUpdateRequiredGpu(&(sim->gpu));
 
   int grid = (nBuf + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
-  
 
   vec_t r,p;
   int *gid = (int*)gpu_buf;
@@ -453,15 +452,14 @@ void unloadAtomsBufferToGpu(char *buf, int nBuf, SimFlat *sim, char *gpu_buf, cu
   p.y = p.x + nBuf;
   p.z = p.y + nBuf;
 
-  int *d_iOffset;
-  cudaMalloc(&d_iOffset, sizeof(int) * nBuf);
+  // use temp arrays
+  int *d_iOffset = sim->flags;
+  int *d_boxId = sim->tmp_sort;
 
-  computeOffsets(nlUpdateRequired, sim, r, d_iOffset, nBuf, stream);
+  computeOffsets(nlUpdateRequired, sim, r, d_iOffset, d_boxId, nBuf, stream);
 
   // map received particles to cells
   UnloadAtomsBufferPacked<<<grid, block, 0, stream>>>(r, p, type, gid, nBuf, sim->gpu.atoms, d_iOffset);
-
-  cudaFree(d_iOffset);
 }
 
 /// The loadBuffer function for a force exchange.

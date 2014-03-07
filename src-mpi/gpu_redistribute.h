@@ -445,12 +445,9 @@ __global__ void updateNAtoms(int *nAtoms, int *boxId, int nBuf)
 
 void computeOffsets(int nlUpdateRequired, SimFlat* sim, 
                                         vec_t r,
-                                        int* d_iOffset,
+                                        int* d_iOffset, int* d_boxId,
                                         int nBuf, cudaStream_t stream)
 {  
-  int *d_boxId;
-  cudaMalloc(&d_boxId, sizeof(int) * nBuf);
-
   int grid = (nBuf + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
 
@@ -473,8 +470,6 @@ void computeOffsets(int nlUpdateRequired, SimFlat* sim,
      computeOffsetsNoUpdateReq<<<grid, block, 0, stream>>>(d_iOffset, nBuf, sim->gpu.boxes.nAtoms, sim->gpu.d_hashTable);
      sim->gpu.d_hashTable.nEntriesGet += nBuf;
   }
-
-  cudaFree(d_boxId);
 }
 
 __global__ void UnloadAtomsBufferPacked(vec_t r, vec_t p, int* type, int* gid, int nBuf, AtomsGpu atoms, int* iOffsets)
