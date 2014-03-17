@@ -137,7 +137,10 @@ int main(int argc, char** argv)
       startTimer(timestepTimer);
       timestep(sim, printRate, sim->dt);
       stopTimer(timestepTimer);
-
+#if 0
+      // analyze input distribution, note this is done on CPU (slow)
+      AnalyzeInput(sim, iStep);
+#endif     
       iStep += printRate;
    }
    profileStop(loopTimer);
@@ -269,11 +272,6 @@ SimFlat* initSimulation(Command cmd)
    if(useNL){
       buildNeighborList(sim,0);
    }
- 
-#if 0
-   // analyze input distribution, note this is done on CPU (slow)
-   AnalyzeInput(sim);
-#endif
 
    startTimer(computeForceTimer);
    computeForce(sim);

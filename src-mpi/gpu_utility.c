@@ -623,7 +623,7 @@ void initLinkCellsGpu(SimFlat *sim, LinkCellGpu* boxes)
   cudaMalloc((void**)&boxes->boxIDLookUp, sim->boxes->nLocalBoxes * sizeof(int));
 }
 
-void AnalyzeInput(SimFlat *sim)
+void AnalyzeInput(SimFlat *sim, int step)
 {
   // copy positions data to host for all cells (including halos)
   cudaMemcpy(sim->boxes->nAtoms, sim->gpu.boxes.nAtoms, sim->boxes->nTotalBoxes * sizeof(int), cudaMemcpyDeviceToHost);
@@ -693,7 +693,9 @@ void AnalyzeInput(SimFlat *sim)
     }
   }
 
-  FILE *file = fopen("histogram.csv", "w");
+  char fileName[100];
+  sprintf(fileName, "histogram_%i.csv", step);
+  FILE *file = fopen(fileName, "w");
   fprintf(file,"# of atoms,cell size = cutoff,neighbor cells,cutoff = 4.95 + 10%%,cutoff = 4.95,\n");
   for(int i = 0; i < size; i++)
     fprintf(file,"%i,%i,%i,%i,%i,\n", i,atoms_per_cell_hist[i],cell_neigh_hist[i],neigh_lists_hist[i],passed_cutoff_hist[i]);
