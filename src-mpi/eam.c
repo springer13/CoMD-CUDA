@@ -518,6 +518,7 @@ InterpolationObject* initInterpolationObject(
    table->n = n;
    table->invDx = 1.0/dx;
    table->x0 = x0;
+   table->invDxXx0 = x0 * table->invDx;
 
    for (int ii=0; ii<n; ++ii)
       table->values[ii] = data[ii];

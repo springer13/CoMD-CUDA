@@ -59,7 +59,9 @@ typedef struct InterpolationObjectGpuSt
    real_t x0;      //!< the starting ordinate range
    real_t xn;      //!< the ending ordinate range
    real_t invDx;   //!< the inverse of the table spacing
+   real_t invDxHalf;
    real_t* values; //!< the abscissa values
+   real_t invDxXx0;
 
 } InterpolationObjectGpu;
 

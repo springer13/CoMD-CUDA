@@ -5,6 +5,7 @@
 #define HASHTABLE_FREE -1
 #define BOUNDARY 1
 #define INTERIOR 2
+#define BOTH 0
 
 #define ISPOWER2(v) ((v) && !((v) & ((v) - 1)))
             
@@ -30,6 +31,22 @@
 #define WARP_ATOM_ACTIVE_CTAS 		16
 #define CTA_CELL_ACTIVE_CTAS 		16
 #endif
+
+#define LOG(X) _LOG( X )
+#define _LOG(X) _LOG_ ## X
+
+#define _LOG_32 5
+#define _LOG_16 4
+#define _LOG_8  3
+#define _LOG_4  2
+#define _LOG_2  1
+#define _LOG_1  0
+
+#define NEIGHLIST_PACKSIZE 8
+#define NEIGHLIST_PACKSIZE_LOG LOG(NEIGHLIST_PACKSIZE)
+#define KERNEL_PACKSIZE 4
+
+#define MAXNEIGHBORLISTSIZE 64
 
 #define VECTOR_WIDTH 4
 

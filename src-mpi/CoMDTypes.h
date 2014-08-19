@@ -165,6 +165,7 @@ typedef struct InterpolationObjectSt
    real_t x0;      //!< the starting ordinate range
    real_t invDx;   //!< the inverse of the table spacing
    real_t* values; //!< the abscissa values
+   real_t invDxXx0;
 } InterpolationObject;
 
 /// Derived struct for an EAM potential.
