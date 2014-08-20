@@ -84,7 +84,7 @@ double timestep(SimFlat* s, int nSteps, real_t dt)
       stopTimer(redistributeTimer);
 
       //TODO overlap buildNeighborListBoundary with computeForce()
-      if(s->method == 3 || s->method == 4){
+      if(s->method == THREAD_ATOM_NL || s->method == WARP_ATOM_NL || s->method == CPU_NL){
          startTimer(neighborListBuildTimer);
 #if 0 //TODO async version
          if(s->gpuAsync)
@@ -104,7 +104,7 @@ double timestep(SimFlat* s, int nSteps, real_t dt)
       stopTimer(velocityTimer);
    }
 
-   if(s->method <= 3)
+   if(s->method < CPU_NL)
       kineticEnergyGpu(s);
    else
       kineticEnergy(s);
@@ -147,7 +147,7 @@ void kineticEnergy(SimFlat* s)
 
 void advanceVelocity(SimFlat* s, real_t dt)
 {
-      if(s->method <= 3)
+      if(s->method < CPU_NL)
               advanceVelocityGpu(s->gpu, dt); 
       else
               advanceVelocityCpu(s, s->boxes->nLocalBoxes, dt); 
@@ -168,7 +168,7 @@ void advanceVelocityCpu(SimFlat* s, int nBoxes, real_t dt)
 
 void advancePosition(SimFlat* s, real_t dt)
 {
-      if(s->method <= 3)
+      if(s->method < CPU_NL)
               advancePositionGpu(&(s->gpu), dt); 
       else
               advancePositionCpu(s, s->boxes->nLocalBoxes, dt);
@@ -187,7 +187,7 @@ void advancePositionCpu(SimFlat* s, int nBoxes, real_t dt)
          s->atoms->r.z[iOff] += dt*s->atoms->p.z[iOff]*invMass;
       }
    }
-   if(s->method == 4)
+   if(s->method == CPU_NL)
 //next call to neighborListUpdateRequired() will loop over all particles TODO: this functionality should not be here (see advanceGPU() for further comments)
       s->atoms->neighborList->updateNeighborListRequired = -1; 
 }
@@ -224,9 +224,9 @@ void kineticEnergyGpu(SimFlat* s)
 /// \see sortAtomsInCell
 void redistributeAtoms(SimFlat* sim)
 { 
-   if(sim->method == 3) 
+   if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL) 
       redistributeAtomsGpuNL(sim);
-   else if(sim->method == 4) 
+   else if(sim->method == CPU_NL) 
       redistributeAtomsCpuNL(sim);
    else
       redistributeAtomsGpu(sim);
@@ -240,7 +240,7 @@ void redistributeAtomsGpu(SimFlat* sim)
    // now we can launch force computations on the interior
    if (sim->gpuAsync) {
      // only update neighbors list when method != 0
-     if (sim->method > 0) 
+     if (sim->method != THREAD_ATOM) 
        updateNeighborsGpuAsync(sim->gpu, sim->flags, sim->gpu.boxes.nLocalBoxes - sim->n_boundary_cells, sim->interior_cells, sim->interior_stream);
 
      int n_interior_cells = sim->gpu.boxes.nLocalBoxes - sim->n_boundary_cells;

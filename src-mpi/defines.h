@@ -7,6 +7,16 @@
 #define INTERIOR 2
 #define BOTH 0
 
+//methods
+#define THREAD_ATOM 0
+#define THREAD_ATOM_NL 1
+#define WARP_ATOM 2
+#define WARP_ATOM_NL 3
+#define CTA_CELL 4
+//CPU method has to be the last
+#define CPU_NL 5
+
+
 #define ISPOWER2(v) ((v) && !((v) & ((v) - 1)))
             
 #define IDX3D(x,y,z,X,Y) ((z)*((Y)*(X)) + ((y)*(X)) + (x))
@@ -25,13 +35,16 @@
 #define THREAD_ATOM_ACTIVE_CTAS 	10	// 62%
 #define WARP_ATOM_ACTIVE_CTAS 		12	// 75%
 #define CTA_CELL_ACTIVE_CTAS 		10	// 62%
+#define WARP_ATOM_NL_CTAS            9  // 56%
 #else
 // 100% occupancy for SP
 #define THREAD_ATOM_ACTIVE_CTAS 	16
 #define WARP_ATOM_ACTIVE_CTAS 		16
 #define CTA_CELL_ACTIVE_CTAS 		16
+#define WARP_ATOM_NL_CTAS           16
 #endif
 
+//log_2(x)
 #define LOG(X) _LOG( X )
 #define _LOG(X) _LOG_ ## X
 
@@ -42,10 +55,13 @@
 #define _LOG_2  1
 #define _LOG_1  0
 
+//Number of threads collaborating to make neighbor list for a single atom
 #define NEIGHLIST_PACKSIZE 8
 #define NEIGHLIST_PACKSIZE_LOG LOG(NEIGHLIST_PACKSIZE)
+//Number of threads to compute forces of single atom in warp_atom_nl method
 #define KERNEL_PACKSIZE 4
 
+//Maximum size of neighbor list for a single atom
 #define MAXNEIGHBORLISTSIZE 64
 
 #define VECTOR_WIDTH 4

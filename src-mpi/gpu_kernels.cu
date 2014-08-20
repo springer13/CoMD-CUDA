@@ -98,46 +98,50 @@ int compute_eam_smem_size(SimGpu sim)
 template<int step>
 void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream = NULL)
 {
-  assert(method <= 3);
-  if (method == 0) { 
+  assert(method < CPU_NL);
+  if (method == THREAD_ATOM) { 
     
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
     EAM_Force_thread_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
   }
-  else if (method == 1) {
+  else if (method == WARP_ATOM) {
     int block = WARP_ATOM_CTA;
     int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
     EAM_Force_warp_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
   } 
-  else if (method == 2) {
+  else if (method == CTA_CELL) {
     cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
     int block = CTA_CELL_CTA;
     int grid = num_cells;
     int smem = compute_eam_smem_size<step>(sim);
     EAM_Force_cta_cell<step><<<grid, block, smem, stream>>>(sim, cells_list);
     cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  }else if (method == 3) { 
+  }else if (method == THREAD_ATOM_NL) { 
+    int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+    int block = THREAD_ATOM_CTA;
+    EAM_Force_thread_atom_NL<step><<<grid, block, 0, stream>>>(sim, atoms_list);
+  }else if (method == WARP_ATOM_NL) { 
     int grid1 = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int grid2 = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
     if(step == 2)
         EAM_Force_thread_atom_NL<step><<<grid1, block, 0, stream>>>(sim, atoms_list);
     else
-        EAM_Force_thread_atom_NL_new<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE ><<<grid2, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+        EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE ><<<grid2, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
   }
 }
 
 template<>
 void eamForce<2>(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
 {
-  assert(method <= 3);
-  if (method == 0 || method == 1 || method == 3) {
+  assert(method < CPU_NL);
+  if (method == THREAD_ATOM || method == WARP_ATOM || method == THREAD_ATOM_NL || method == WARP_ATOM_NL) {
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
     EAM_Force_thread_atom<2><<<grid, block, 0, stream>>>(sim, atoms_list);
   }
-  else if (method == 2) {
+  else if (method == CTA_CELL) {
     int grid = num_cells;
     int block = CTA_CELL_CTA;
     EAM_Force_cta_cell<2><<<grid, block, 0, stream>>>(sim, cells_list);
@@ -356,7 +360,7 @@ void updateLinkCellsGpu(SimFlat *sim)
   cudaMemcpy(&sim->gpu.max_atoms_cell, &flags[sim->boxes->nLocalBoxes * MAXATOMS], sizeof(int), cudaMemcpyDeviceToHost);
 
   // build new atom lists: only for thread/atom or warp/atom approaches
-  if (sim->method == 0 || sim->method == 1 || sim->method == 3)
+  if (sim->method == THREAD_ATOM || sim->method == WARP_ATOM || sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL)
     BuildAtomLists(sim);
 }
 
@@ -629,7 +633,7 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
 }
 
 
-//Neighborlist generation for thread_atoms_NL_new only
+//Neighborlist generation for warp_atoms_NL only
 //> maxNeighbors is the maximum number of entries in neighbor list
 //> packSize is the number of threads cooperating to compute neighbor list for single atom
 //> logPackSize is log_2(packSize)
@@ -640,7 +644,7 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
 template<int maxNeighbors, int packSize, int logPackSize, int memoryPackSize, int boundaryFlag>
     __global__
     __launch_bounds__(packSize * 32, 1)
-void buildNeighborListKernel_new2(SimGpu sim, real_t rCut2)
+void buildNeighborListKernel_warp(SimGpu sim, real_t rCut2)
 {
     __shared__ int temp[32 * maxNeighbors];
 
@@ -837,7 +841,7 @@ void buildNeighborListKernel_new2(SimGpu sim, real_t rCut2)
 template<int maxNeighbors, int packSize, int logPackSize, int boundaryFlag>
     __global__
     __launch_bounds__(packSize * 32, 2)
-void buildNeighborListKernel_new(SimGpu sim)
+void buildNeighborListKernel(SimGpu sim)
 {
     __shared__ int temp[32 * maxNeighbors];
 
@@ -1029,10 +1033,9 @@ void buildNeighborListKernel_new(SimGpu sim)
     }
 }
 
-
 __global__
 __launch_bounds__(THREAD_ATOM_CTA, THREAD_ATOM_ACTIVE_CTAS)
-void buildNeighborListKernel(SimGpu sim, int boundaryFlag)
+void buildNeighborListKernel_simple(SimGpu sim, int boundaryFlag)
 {
   int tid = blockIdx.x * blockDim.x + threadIdx.x; 
   if (tid >= sim.a_list.n) return;
@@ -1098,9 +1101,11 @@ void buildNeighborListKernel(SimGpu sim, int boundaryFlag)
   sim.atoms.neighborList.nNeighbors[iLid] = nNeighbors;
 }
 
+
+
 /// Build the neighbor list for all boxes which are marked as dirty.
 extern "C"
-void buildNeighborListGpu(SimGpu* sim, int boundaryFlag)
+void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag)
 {
    NeighborListGpu* neighborList = &(sim->atoms.neighborList); 
    
@@ -1116,12 +1121,26 @@ void buildNeighborListGpu(SimGpu* sim, int boundaryFlag)
            cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); 
            real_t rCut = sim->eam_pot.cutoff;
            real_t rCut2 = (rCut+sim->atoms.neighborList.skinDistance)*(rCut+sim->atoms.neighborList.skinDistance);
+           if(method == THREAD_ATOM_NL)
+           {
            if(boundaryFlag == BOUNDARY)
-               buildNeighborListKernel_new2<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOUNDARY><<<grid, block>>>(*sim, rCut2);
+               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, BOUNDARY><<<grid, block>>>(*sim);
            else if (boundaryFlag == INTERIOR)
-               buildNeighborListKernel_new2<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, INTERIOR><<<grid, block>>>(*sim, rCut2);
+               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, INTERIOR><<<grid, block>>>(*sim);
            else
-               buildNeighborListKernel_new2<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOTH><<<grid, block>>>(*sim, rCut2);
+               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, BOTH><<<grid, block>>>(*sim);
+           }
+           else if(method == WARP_ATOM_NL)
+           {
+               if(boundaryFlag == BOUNDARY)
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOUNDARY><<<grid, block>>>(*sim, rCut2);
+               else if (boundaryFlag == INTERIOR)
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, INTERIOR><<<grid, block>>>(*sim, rCut2);
+               else
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOTH><<<grid, block>>>(*sim, rCut2);
+
+           }
+
            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1); 
            neighborList->nStepsSinceLastBuild = 1;
            neighborList->updateNeighborListRequired = 0;

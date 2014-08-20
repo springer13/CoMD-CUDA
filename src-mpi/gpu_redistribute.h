@@ -455,7 +455,7 @@ void computeOffsets(int nlUpdateRequired, SimFlat* sim,
   if(nlUpdateRequired){
 
      computeBoxIds<<<grid, block, 0, stream>>>(sim->gpu.boxes, r, d_boxId, nBuf); //fill d_boxId with iBox for each atom
-     if(sim->method == 3){
+     if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL){
         //compute iOff for each particle and store the result to iOffsetOut
         computeOffsetsUpdateReq<1><<<grid, block, 0, stream>>>(d_iOffset, nBuf, sim->gpu.boxes.nAtoms, d_boxId, sim->gpu);
         sim->gpu.d_hashTable.nEntriesPut += nBuf;

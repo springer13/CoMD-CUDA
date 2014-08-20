@@ -135,7 +135,7 @@ void ljPrint(FILE* file, BasePotential* pot)
 
 int ljForce(SimFlat* sim)
 {
-   if(sim->method == 4)
+   if(sim->method == CPU_NL)
            ljForceCpuNL(sim);
    else
            ljForceGpu(sim->gpu);

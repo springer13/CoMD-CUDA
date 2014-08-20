@@ -237,7 +237,7 @@ Command parseCommandLine(int argc, char** argv)
    addArg("delta",      'r', 1, 'd',  &(cmd.initialDelta), 0,             "initial delta (Angstroms)");
    addArg("hilbert",    'H', 0, 'd',  &(cmd.doHilbert), 0,             "space-filling curve for the traversal of cells");
    addArg("skinDistance",'S', 1, 'd',  &(cmd.relativeSkinDistance), 0,     "skinDistance (relative to cutoff (default: 0.1))");
-   addArg("method",  'm', 1, 's',  cmd.method, sizeof(cmd.method), "thread_atom, warp_atom,cta_cell,thread_atom_nl,cpu_nl");
+   addArg("method",  'm', 1, 's',  cmd.method, sizeof(cmd.method), "thread_atom,warp_atom,warp_atom_nl,cta_cell,thread_atom_nl,cpu_nl");
 
    // gpu-specific
    addArg("gpuAsync",   'a', 1, 'i',  &(cmd.gpuAsync),     0,             "communicaton hiding optimization using streams");

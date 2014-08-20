@@ -52,7 +52,7 @@ void initNeighborListGpu(NeighborListGpu* neighborList, const int nLocalBoxes, c
 
 
    neighborList->nMaxLocal = MAXATOMS*nLocalBoxes; // make this list a little larger to make room for migrated particles
-   neighborList->nMaxNeighbors = 64;
+   neighborList->nMaxNeighbors = MAXNEIGHBORLISTSIZE;
    neighborList->skinDistance = skinDistance;
    neighborList->skinDistance2 = skinDistance*skinDistance;
    neighborList->skinDistanceHalf2 = (skinDistance/2.0)*(skinDistance/2.0);
