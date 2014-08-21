@@ -184,10 +184,10 @@ BasePotential* initEamPot(const char* dir, const char* file, const char* type)
 
 int eamForce(SimFlat* s)
 {
-        assert(s->method<=4);
-        if(s->method <= 3)
+        assert(s->method<=CPU_NL);
+        if(s->method < CPU_NL)
             return eamForceGpu(s);
-        else if(s->method == 4)
+        else if(s->method == CPU_NL)
             return eamForceCpuNL(s);
         else
             return -1;
@@ -211,7 +211,7 @@ int eamForceGpu(SimFlat* s)
 
    if (s->gpuAsync) {   
      // only update neighbors list when method != 0
-     if (s->method == 1 || s->method == 2) 
+     if (s->method == WARP_ATOM || s->method == CTA_CELL) 
        updateNeighborsGpuAsync(s->gpu, s->flags, s->n_boundary_cells, s->boundary_cells, s->boundary_stream);
 
      // interior stream already launched
@@ -227,7 +227,7 @@ int eamForceGpu(SimFlat* s)
    }
    else {
      // only update neighbors list when method != 0
-     if (s->method == 1 || s->method == 2) 
+     if (s->method == WARP_ATOM || s->method == CTA_CELL) 
        updateNeighborsGpu(s->gpu, s->flags);
 
      //TODO make the async force exchange work
@@ -285,7 +285,7 @@ int eamForceCpuNL(SimFlat* s)
       int maxTotalAtoms = MAXATOMS*s->boxes->nTotalBoxes;
       pot->dfEmbed = comdMalloc(maxTotalAtoms*sizeof(real_t));
       pot->rhobar  = comdMalloc(maxTotalAtoms*sizeof(real_t));
-      pot->forceExchange = initForceHaloExchange(s->domain, s->boxes,s->method<=3);
+      pot->forceExchange = initForceHaloExchange(s->domain, s->boxes,s->method<CPU_NL);
       pot->forceExchangeData = comdMalloc(sizeof(ForceExchangeData));
       pot->forceExchangeData->dfEmbed = pot->dfEmbed;
       pot->forceExchangeData->boxes = s->boxes;
@@ -518,6 +518,7 @@ InterpolationObject* initInterpolationObject(
    table->n = n;
    table->invDx = 1.0/dx;
    table->x0 = x0;
+   table->invDxXx0 = x0 * table->invDx;
 
    for (int ii=0; ii<n; ++ii)
       table->values[ii] = data[ii];

@@ -52,6 +52,7 @@
 
 #include "hashTable.h"
 
+
 extern "C"
 int neighborListUpdateRequiredGpu(SimGpu* sim);
 
@@ -97,43 +98,50 @@ int compute_eam_smem_size(SimGpu sim)
 template<int step>
 void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream = NULL)
 {
-  assert(method <= 3);
-  if (method == 0) { 
+  assert(method < CPU_NL);
+  if (method == THREAD_ATOM) { 
     
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
     EAM_Force_thread_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
   }
-  else if (method == 1) {
+  else if (method == WARP_ATOM) {
     int block = WARP_ATOM_CTA;
     int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
     EAM_Force_warp_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
   } 
-  else if (method == 2) {
+  else if (method == CTA_CELL) {
     cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
     int block = CTA_CELL_CTA;
     int grid = num_cells;
     int smem = compute_eam_smem_size<step>(sim);
     EAM_Force_cta_cell<step><<<grid, block, smem, stream>>>(sim, cells_list);
     cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  }else if (method == 3) { 
-    
+  }else if (method == THREAD_ATOM_NL) { 
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
     EAM_Force_thread_atom_NL<step><<<grid, block, 0, stream>>>(sim, atoms_list);
+  }else if (method == WARP_ATOM_NL) { 
+    int grid1 = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+    int grid2 = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+    int block = THREAD_ATOM_CTA;
+    if(step == 2)
+        EAM_Force_thread_atom_NL<step><<<grid1, block, 0, stream>>>(sim, atoms_list);
+    else
+        EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE ><<<grid2, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
   }
 }
 
 template<>
 void eamForce<2>(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
 {
-  assert(method <= 3);
-  if (method == 0 || method == 1 || method == 3) {
+  assert(method < CPU_NL);
+  if (method == THREAD_ATOM || method == WARP_ATOM || method == THREAD_ATOM_NL || method == WARP_ATOM_NL) {
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
     EAM_Force_thread_atom<2><<<grid, block, 0, stream>>>(sim, atoms_list);
   }
-  else if (method == 2) {
+  else if (method == CTA_CELL) {
     int grid = num_cells;
     int block = CTA_CELL_CTA;
     EAM_Force_cta_cell<2><<<grid, block, 0, stream>>>(sim, cells_list);
@@ -352,7 +360,7 @@ void updateLinkCellsGpu(SimFlat *sim)
   cudaMemcpy(&sim->gpu.max_atoms_cell, &flags[sim->boxes->nLocalBoxes * MAXATOMS], sizeof(int), cudaMemcpyDeviceToHost);
 
   // build new atom lists: only for thread/atom or warp/atom approaches
-  if (sim->method == 0 || sim->method == 1 || sim->method == 3)
+  if (sim->method == THREAD_ATOM || sim->method == WARP_ATOM || sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL)
     BuildAtomLists(sim);
 }
 
@@ -624,9 +632,410 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
         return  sim->atoms.neighborList.updateNeighborListRequired;
 }
 
+
+//Neighborlist generation for warp_atoms_NL only
+//> maxNeighbors is the maximum number of entries in neighbor list
+//> packSize is the number of threads cooperating to compute neighbor list for single atom
+//> logPackSize is log_2(packSize)
+//> memoryPackSize is the number of threads in the compute force kernel cooperating on a single atom 
+//    and number of entries in a single pack of neighbor list that is written to memory, 
+//    memoryPackSize must be <= packSize
+//> boundaryFlag is BOUNDARY, INTERNAL or BOTH
+template<int maxNeighbors, int packSize, int logPackSize, int memoryPackSize, int boundaryFlag>
+    __global__
+    __launch_bounds__(packSize * 32, 1)
+void buildNeighborListKernel_warp(SimGpu sim, real_t rCut2)
+{
+    __shared__ int temp[32 * maxNeighbors];
+
+    const int atid = threadIdx.x / packSize;
+    const int laneid = threadIdx.x & 31;
+    const int tid = blockIdx.x * 32 + atid; 
+    int * __restrict__ neighborList;
+
+    const unsigned int tmpmask = (1 << laneid) - 1;
+
+    const unsigned int tmpmask2 = ~((1 << (laneid - (laneid & (packSize-1)))) - 1);
+    const unsigned int mask = tmpmask2 & tmpmask; 
+
+    const unsigned int mask2 = ((1 << packSize) - 1) << ((laneid / packSize) << logPackSize); 
+    
+    const int ldNeighborList = sim.atoms.neighborList.nMaxLocal*memoryPackSize; //leading dimension
+    int* __restrict__ nNeighborsArray = sim.atoms.neighborList.nNeighbors;
+    if (tid < sim.a_list.n)
+    {
+        // compute box ID and local atom ID
+        int iAtom = sim.a_list.atoms[tid];
+        int iBox = sim.a_list.cells[tid]; 
+
+        if(boundaryFlag == BOUNDARY && sim.cell_type[iBox] == 0) return;
+        if(boundaryFlag == INTERIOR && sim.cell_type[iBox] == 1) return;
+
+        const int iOff = iBox * MAXATOMS + iAtom;
+
+        // fetch position
+        real_t *const __restrict__ rx = sim.atoms.r.x;
+        real_t *const __restrict__ ry = sim.atoms.r.y;
+        real_t *const __restrict__ rz = sim.atoms.r.z;
+
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+        real_t irx = __ldg(rx + iOff);
+        real_t iry = __ldg(ry + iOff);
+        real_t irz = __ldg(rz + iOff);
+#else
+        real_t irx = rx[iOff];
+        real_t iry = ry[iOff];
+        real_t irz = rz[iOff];
+#endif
+        //get NL related data
+        const int iLid = tid; 
+        //assert(iLid<ldNeighborList);
+        neighborList = sim.atoms.neighborList.list;
+        int nNeighbors = 0;
+        const int id = threadIdx.x & (packSize -1);
+        if(id == 0)
+        {
+            sim.atoms.neighborList.lastR.x[iLid] = irx;
+            sim.atoms.neighborList.lastR.y[iLid] = iry;
+            sim.atoms.neighborList.lastR.z[iLid] = irz;
+        }
+
+        // loop over my neighbor cells
+        const int *const __restrict__ neighbor_cells = sim.neighbor_cells;
+        const int *const __restrict__ nAtoms = sim.boxes.nAtoms;
+        int * mytemp = temp + atid * memoryPackSize;
+//Our own cell
+        {
+            const int jBox = iBox;
+            const int jOffset = jBox * MAXATOMS;
+            const int nJBox = nAtoms[jBox] + jOffset;
+
+            real_t * __restrict__ rx = sim.atoms.r.x + jOffset + id;
+            real_t * __restrict__ ry = sim.atoms.r.y + jOffset + id;
+            real_t * __restrict__ rz = sim.atoms.r.z + jOffset + id;
+
+
+            // loop over all atoms in my cell 
+            for (int jAtom = jOffset; jAtom < nJBox; jAtom += packSize) 
+            {  
+                int jOff = jAtom +id; 
+
+                real_t r2;
+                if(jOff < nJBox)
+                {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+                    real_t dx = irx - __ldg(rx);
+                    real_t dy = iry - __ldg(ry);
+                    real_t dz = irz - __ldg(rz);
+                    rx += packSize;
+                    ry += packSize;
+                    rz += packSize;
+#else
+                    real_t dx = irx - rx[jOff];
+                    real_t dy = iry - ry[jOff];
+                    real_t dz = irz - rz[jOff];
+#endif
+                // distance^2
+                    r2 = dx*dx + dy*dy + dz*dz;
+                }
+                else
+                    r2 = 0.0;
+
+                bool flag = r2 <= rCut2 && r2 > 0.0;
+                unsigned int x;
+                int n;
+                if(x = __ballot(flag))
+                {
+                //Scan
+                    x = x & mask2;
+                    n = __popc(x);
+                    x = x & mask;
+                    const int p = __popc(x);
+                    const int place = nNeighbors + p;
+                    if (flag) mytemp[(place/memoryPackSize) * 32 * memoryPackSize + (place & (memoryPackSize-1))] = jOff;
+                    nNeighbors += n;
+                }
+
+            } // loop over all atoms
+        }
+
+//Other cells
+#pragma unroll
+        for (int j = 1; j < N_MAX_NEIGHBORS; j++) 
+        { 
+            const int jBox = neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
+            const int jOffset = jBox * MAXATOMS;
+            const int nJBox = nAtoms[jBox] + jOffset;
+
+            real_t * __restrict__ rx = sim.atoms.r.x + jOffset + id;
+            real_t * __restrict__ ry = sim.atoms.r.y + jOffset + id;
+            real_t * __restrict__ rz = sim.atoms.r.z + jOffset + id;
+
+
+            // loop over all atoms in the neighbor cell 
+            for (int jAtom = jOffset; jAtom < nJBox; jAtom += packSize) 
+            {  
+                int jOff = jAtom +id; 
+
+                real_t r2;
+                if(jOff < nJBox)
+                {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+                    real_t dx = irx - __ldg(rx);
+                    real_t dy = iry - __ldg(ry);
+                    real_t dz = irz - __ldg(rz);
+                    rx += packSize;
+                    ry += packSize;
+                    rz += packSize;
+#else
+                    real_t dx = irx - rx[jOff];
+                    real_t dy = iry - ry[jOff];
+                    real_t dz = irz - rz[jOff];
+#endif
+                // distance^2
+                    r2 = dx*dx + dy*dy + dz*dz;
+                }
+                else
+                    r2 = 1.0e100; //Big value
+
+                //r2 is never 0
+                bool flag = r2 <= rCut2;
+                unsigned int x;
+                int n;
+                if(x = __ballot(flag))
+                {
+                //Scan
+                    x = x & mask2;
+                    n = __popc(x);
+                    x = x & mask;
+                    const int p = __popc(x);
+                    const int place = nNeighbors + p;
+                    if (flag) mytemp[(place/memoryPackSize) * 32 * memoryPackSize + (place & (memoryPackSize-1))] = jOff;
+                    nNeighbors += n;
+                }
+
+            } // loop over all atoms
+        } // loop over neighbor cells
+
+        if(id == 0)
+        {
+            nNeighborsArray[iLid] = nNeighbors;
+        }
+    }
+    __syncthreads();
+
+    const int gtid = blockIdx.x * 32 * memoryPackSize + threadIdx.x; 
+    const int iLid = gtid / memoryPackSize;
+    if(iLid < sim.a_list.n && threadIdx.x < 32 * memoryPackSize)
+    {
+#pragma unroll
+        for(int i = 0; i < maxNeighbors/memoryPackSize;++i)
+        {
+            neighborList[gtid + i * ldNeighborList] = temp[threadIdx.x + i * 32 * memoryPackSize];
+        }
+    }
+}
+
+
+template<int maxNeighbors, int packSize, int logPackSize, int boundaryFlag>
+    __global__
+    __launch_bounds__(packSize * 32, 2)
+void buildNeighborListKernel(SimGpu sim)
+{
+    __shared__ int temp[32 * maxNeighbors];
+
+    const int atid = threadIdx.x / packSize;
+    const int laneid = threadIdx.x & 31;
+    const int tid = blockIdx.x * 32 + atid; 
+    int * __restrict__ neighborList;
+
+    const unsigned int tmpmask = (1 << laneid) - 1;
+
+    const unsigned int tmpmask2 = ~((1 << (laneid - (laneid & (packSize-1)))) - 1);
+    const unsigned int mask = tmpmask2 & tmpmask; 
+
+    const unsigned int mask2 = ((1 << packSize) - 1) << ((laneid / packSize) << logPackSize); 
+    
+    const int ldNeighborList = sim.atoms.neighborList.nMaxLocal; //leading dimension
+    int* __restrict__ nNeighborsArray = sim.atoms.neighborList.nNeighbors;
+    if (tid < sim.a_list.n)
+    {
+
+
+        // compute box ID and local atom ID
+        int iAtom = sim.a_list.atoms[tid];
+        int iBox = sim.a_list.cells[tid]; 
+
+        //assert(sim.cell_type[iBox] == 0 || sim.cell_type[iBox] == 1);
+        if(boundaryFlag == BOUNDARY && sim.cell_type[iBox] == 0) return;
+        if(boundaryFlag == INTERIOR && sim.cell_type[iBox] == 1) return;
+
+        const int iOff = iBox * MAXATOMS + iAtom;
+
+        const real_t rCut = sim.eam_pot.cutoff;
+        const real_t rCut2 = (rCut+sim.atoms.neighborList.skinDistance)*(rCut+sim.atoms.neighborList.skinDistance);
+
+        // fetch position
+        real_t *const __restrict__ rx = sim.atoms.r.x;
+        real_t *const __restrict__ ry = sim.atoms.r.y;
+        real_t *const __restrict__ rz = sim.atoms.r.z;
+
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+        real_t irx = __ldg(rx + iOff);
+        real_t iry = __ldg(ry + iOff);
+        real_t irz = __ldg(rz + iOff);
+#else
+        real_t irx = rx[iOff];
+        real_t iry = ry[iOff];
+        real_t irz = rz[iOff];
+#endif
+        //get NL related data
+        const int iLid = tid; 
+        neighborList = sim.atoms.neighborList.list;
+        int nNeighbors = 0;
+        const int id = threadIdx.x & (packSize -1);
+        if(id == 0)
+        {
+            sim.atoms.neighborList.lastR.x[iLid] = irx;
+            sim.atoms.neighborList.lastR.y[iLid] = iry;
+            sim.atoms.neighborList.lastR.z[iLid] = irz;
+        }
+
+        // loop over my neighbor cells
+        const int *const __restrict__ neighbor_cells = sim.neighbor_cells;
+        const int *const __restrict__ nAtoms = sim.boxes.nAtoms;
+        int * mytemp = temp + atid;
+//Our own cell
+        {
+            const int jBox = iBox;
+            const int jOffset = jBox * MAXATOMS;
+            const int nJBox = nAtoms[jBox] + jOffset;
+
+            real_t * __restrict__ rx = sim.atoms.r.x + jOffset + id;
+            real_t * __restrict__ ry = sim.atoms.r.y + jOffset + id;
+            real_t * __restrict__ rz = sim.atoms.r.z + jOffset + id;
+
+
+            // loop over all atoms in my cell 
+            for (int jAtom = jOffset; jAtom < nJBox; jAtom += packSize) 
+            {  
+                int jOff = jAtom +id; 
+
+                real_t r2;
+                if(jOff < nJBox)
+                {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+                    real_t dx = irx - __ldg(rx);
+                    real_t dy = iry - __ldg(ry);
+                    real_t dz = irz - __ldg(rz);
+                    rx += packSize;
+                    ry += packSize;
+                    rz += packSize;
+#else
+                    real_t dx = irx - rx[jOff];
+                    real_t dy = iry - ry[jOff];
+                    real_t dz = irz - rz[jOff];
+#endif
+                // distance^2
+                    r2 = dx*dx + dy*dy + dz*dz;
+                }
+                else
+                    r2 = 0.0;
+
+                bool flag = r2 <= rCut2 && r2 > 0.0;
+                unsigned int x;
+                int n;
+                if(x = __ballot(flag))
+                {
+                //Scan
+                    x = x & mask2;
+                    n = __popc(x);
+                    x = x & mask;
+                    const int p = __popc(x);
+                    if (flag) mytemp[(nNeighbors+p)*32] = jOff;
+                    nNeighbors += n;
+                }
+
+            } // loop over all atoms
+        }
+
+//Other cells
+#pragma unroll
+        for (int j = 1; j < N_MAX_NEIGHBORS; j++) 
+        { 
+            const int jBox = neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
+            const int jOffset = jBox * MAXATOMS;
+            const int nJBox = nAtoms[jBox] + jOffset;
+
+            real_t * __restrict__ rx = sim.atoms.r.x + jOffset + id;
+            real_t * __restrict__ ry = sim.atoms.r.y + jOffset + id;
+            real_t * __restrict__ rz = sim.atoms.r.z + jOffset + id;
+
+
+            // loop over all atoms in the neighbor cell 
+            for (int jAtom = jOffset; jAtom < nJBox; jAtom += packSize) 
+            {  
+                int jOff = jAtom +id; 
+
+                real_t r2;
+                if(jOff < nJBox)
+                {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+                    real_t dx = irx - __ldg(rx);
+                    real_t dy = iry - __ldg(ry);
+                    real_t dz = irz - __ldg(rz);
+                    rx += packSize;
+                    ry += packSize;
+                    rz += packSize;
+#else
+                    real_t dx = irx - rx[jOff];
+                    real_t dy = iry - ry[jOff];
+                    real_t dz = irz - rz[jOff];
+#endif
+                // distance^2
+                    r2 = dx*dx + dy*dy + dz*dz;
+                }
+                else
+                    r2 = 1.0e100;  
+//r2 never 0
+                bool flag = r2 <= rCut2;
+                unsigned int x;
+                int n;
+                if(x = __ballot(flag))
+                {
+                //Scan
+                    x = x & mask2;
+                    n = __popc(x);
+                    x = x & mask;
+                    const int p = __popc(x);
+                    if (flag) mytemp[(nNeighbors+p)*32] = jOff;
+                    nNeighbors += n;
+                }
+
+            } // loop over all atoms
+        } // loop over neighbor cells
+
+        if(id == 0)
+            nNeighborsArray[iLid] = nNeighbors;
+    }
+    __syncthreads();
+    const int iLid = blockIdx.x * 32 + laneid;
+    int N;
+    if(iLid < sim.a_list.n)
+        N = nNeighborsArray[iLid];
+    else
+        N = 0;
+    for(int i = threadIdx.x >> 5; i < N; i += packSize)
+    {
+        neighborList[iLid + i * ldNeighborList] = temp[(i<<5)+(threadIdx.x&31)];
+    }
+}
+
 __global__
 __launch_bounds__(THREAD_ATOM_CTA, THREAD_ATOM_ACTIVE_CTAS)
-void buildNeighborListKernel(SimGpu sim, int boundaryFlag)
+void buildNeighborListKernel_simple(SimGpu sim, int boundaryFlag)
 {
   int tid = blockIdx.x * blockDim.x + threadIdx.x; 
   if (tid >= sim.a_list.n) return;
@@ -692,19 +1101,47 @@ void buildNeighborListKernel(SimGpu sim, int boundaryFlag)
   sim.atoms.neighborList.nNeighbors[iLid] = nNeighbors;
 }
 
+
+
 /// Build the neighbor list for all boxes which are marked as dirty.
 extern "C"
-void buildNeighborListGpu(SimGpu* sim, int boundaryFlag)
+void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag)
 {
    NeighborListGpu* neighborList = &(sim->atoms.neighborList); 
    
    if(neighborListUpdateRequiredGpu(sim) == 1){
            emptyNeighborListGpu(sim, boundaryFlag);
            
-           int grid = (sim->a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-           int block = THREAD_ATOM_CTA;
-           buildNeighborListKernel<<<grid, block>>>(*sim, boundaryFlag);
+           //int grid = (sim->a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+           int grid = (sim->a_list.n + 31)/ 32;
+           const int packSize = NEIGHLIST_PACKSIZE;
+           const int logPackSize = NEIGHLIST_PACKSIZE_LOG;
+           const int memoryPackSize = KERNEL_PACKSIZE;
+           int block = packSize * 32;
+           cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); 
+           real_t rCut = sim->eam_pot.cutoff;
+           real_t rCut2 = (rCut+sim->atoms.neighborList.skinDistance)*(rCut+sim->atoms.neighborList.skinDistance);
+           if(method == THREAD_ATOM_NL)
+           {
+           if(boundaryFlag == BOUNDARY)
+               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, BOUNDARY><<<grid, block>>>(*sim);
+           else if (boundaryFlag == INTERIOR)
+               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, INTERIOR><<<grid, block>>>(*sim);
+           else
+               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, BOTH><<<grid, block>>>(*sim);
+           }
+           else if(method == WARP_ATOM_NL)
+           {
+               if(boundaryFlag == BOUNDARY)
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOUNDARY><<<grid, block>>>(*sim, rCut2);
+               else if (boundaryFlag == INTERIOR)
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, INTERIOR><<<grid, block>>>(*sim, rCut2);
+               else
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOTH><<<grid, block>>>(*sim, rCut2);
 
+           }
+
+           cudaDeviceSetCacheConfig(cudaFuncCachePreferL1); 
            neighborList->nStepsSinceLastBuild = 1;
            neighborList->updateNeighborListRequired = 0;
            neighborList->forceRebuildFlag = 0;

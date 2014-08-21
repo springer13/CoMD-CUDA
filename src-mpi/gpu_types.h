@@ -55,11 +55,13 @@ typedef struct LjPotentialGpuSt
 
 typedef struct InterpolationObjectGpuSt
 {
-   int n;          //!< the number of values in the table
-   real_t x0;      //!< the starting ordinate range
-   real_t xn;      //!< the ending ordinate range
-   real_t invDx;   //!< the inverse of the table spacing
-   real_t* values; //!< the abscissa values
+   int n;           //!< the number of values in the table
+   real_t x0;       //!< the starting ordinate range
+   real_t xn;       //!< the ending ordinate range
+   real_t invDx;    //!< the inverse of the table spacing
+   real_t invDxHalf;//!< Half of the inverse of the table spacing
+   real_t* values;  //!< the abscissa values
+   real_t invDxXx0; //!< the starting ordinate range times the inverse of the table spacing
 
 } InterpolationObjectGpu;
 

@@ -122,6 +122,7 @@ void EAM_Force_thread_atom(SimGpu sim, AtomListGpu list)
   }
 }
 
+
 /// templated for the 1st and 3rd EAM passes using the neighborlist
 template<int step>
 __global__

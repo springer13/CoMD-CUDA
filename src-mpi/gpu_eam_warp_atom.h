@@ -164,3 +164,170 @@ void EAM_Force_warp_atom(SimGpu sim, AtomListGpu list)
   }
 }
 
+
+/// templated for the 1st and 3rd EAM passes using the neighborlist
+template<int step, int packSize, int maxNeighbors>
+__global__
+__launch_bounds__(THREAD_ATOM_CTA, WARP_ATOM_NL_CTAS)
+void EAM_Force_warp_atom_NL(SimGpu sim, AtomListGpu list, real_t rCut2)
+{
+    int tid = (blockIdx.x * blockDim.x + threadIdx.x)/packSize; 
+    if (tid >= list.n) return;
+    // compute box ID and local atom ID
+    const int iAtom = list.atoms[tid];
+    const int iBox = list.cells[tid]; 
+    const int iOff = iBox * MAXATOMS + iAtom;
+
+    //Index in pack
+    const int id = threadIdx.x%packSize;
+
+    // init forces and energy
+    real_t ifx = 0;
+    real_t ify = 0;
+    real_t ifz = 0;
+    real_t ie = 0;
+    real_t irho = 0;
+
+    if (step == 3 && id == 0) {
+        ifx = sim.atoms.f.x[iOff];
+        ify = sim.atoms.f.y[iOff];
+        ifz = sim.atoms.f.z[iOff];
+    }
+
+    real_t *const __restrict__ rx = sim.atoms.r.x;
+    real_t *const __restrict__ ry = sim.atoms.r.y;
+    real_t *const __restrict__ rz = sim.atoms.r.z;
+
+    // fetch position
+    const real_t irx = rx[iOff];
+    const real_t iry = ry[iOff];
+    const real_t irz = rz[iOff];
+
+    const int iLid = blockIdx.x * blockDim.x + threadIdx.x; 
+    const int ldNeighborList = sim.atoms.neighborList.nMaxLocal*packSize; //leading dimension
+
+    int* neighborList = sim.atoms.neighborList.list; 
+    int nNeighbors = sim.atoms.neighborList.nNeighbors[tid];
+
+    int current = id;
+    // loop over my neighboring particles within the neighbor-list
+    int jOff_prefetch = neighborList[iLid];
+
+#pragma unroll
+    for (int j = 0; j < maxNeighbors/packSize; ++j) 
+    { 
+        real_t dx, dy, dz, r2;
+
+        int jOff = jOff_prefetch;
+        if(j + 1 < maxNeighbors/packSize)
+            jOff_prefetch = neighborList[(j+1) * ldNeighborList + iLid ];
+
+        if(current < nNeighbors)
+        {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350
+            dx = irx - __ldg(&rx[jOff]);
+            dy = iry - __ldg(&ry[jOff]);
+            dz = irz - __ldg(&rz[jOff]);
+#else
+            dx = irx - rx[jOff];
+            dy = iry - ry[jOff];
+            dz = irz - rz[jOff];
+#endif
+            // distance^2
+            r2 = dx*dx + dy*dy + dz*dz;
+        }
+        else
+            r2 = 0.0;
+
+        current += packSize;
+        // no divide by zero
+        if (r2 <= rCut2 && r2 > 0.0) 
+        {
+
+            real_t r = sqrt(r2);
+
+            real_t phiTmp, dPhi, rhoTmp, dRho;
+            if (step == 1) {
+                interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
+                interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+            }
+            else {
+                // step = 3
+                interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+                dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+            }
+
+            dPhi /= r;
+
+            // update forces
+            ifx -= dPhi * dx;
+            ify -= dPhi * dy;
+            ifz -= dPhi * dz;
+
+            // update energy & accumulate rhobar
+            if (step == 1) {
+                ie += phiTmp;
+                irho += rhoTmp;
+            }
+        } 
+    } // loop over neighbor-list
+
+    //Reduction inside warp
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
+#pragma unroll
+    for(int j = 1; j < 32; j *= 2)
+    {
+        if(packSize > j)
+        {
+            const real_t tmpx = __shfl_down(ifx, j, packSize);
+            const real_t tmpy = __shfl_down(ify, j, packSize);
+            const real_t tmpz = __shfl_down(ifz, j, packSize);
+            if(step == 1)
+            {
+                const real_t tmpe = __shfl_down(ie, j, packSize);
+                const real_t tmprho = __shfl_down(irho, j, packSize);
+                ie += tmpe;
+                irho += tmprho;
+            }
+            ifx += tmpx;
+            ify += tmpy;
+            ifz += tmpz;
+        }
+    }
+#else
+    __shared__ real_t smem[THREAD_ATOM_CTA];
+    for(int j = 1; j < 32; j *= 2)
+    {
+        if(packSize > j)
+        {
+            const real_t tmpx = __shfl_down(ifx, j, packSize, smem);
+            const real_t tmpy = __shfl_down(ify, j, packSize, smem);
+            const real_t tmpz = __shfl_down(ifz, j, packSize, smem);
+            if(step == 1)
+            {
+                const real_t tmpe = __shfl_down(ie, j, packSize, smem);
+                const real_t tmprho = __shfl_down(irho, j, packSize, smem);
+                ie += tmpe;
+                irho += tmprho;
+            }
+            ifx += tmpx;
+            ify += tmpy;
+            ifz += tmpz;
+        }
+    }
+#endif
+
+    if(id == 0)
+    {
+        sim.atoms.f.x[iOff] = ifx;
+        sim.atoms.f.y[iOff] = ify;
+        sim.atoms.f.z[iOff] = ifz;
+
+        if (step == 1) {
+            sim.atoms.e[iOff] = 0.5 * ie;
+            sim.eam_pot.rhobar[iOff] = irho;
+        }
+    }
+}
+
+

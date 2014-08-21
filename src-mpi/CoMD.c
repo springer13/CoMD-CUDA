@@ -82,8 +82,6 @@ static void printThings(SimFlat* s, int iStep, double elapsedTime);
 static void printSimulationDataYaml(FILE* file, SimFlat* s);
 static void sanityChecks(Command cmd, double cutoff, double latticeConst, char latticeType[8]);
 
-EXTERN_C void buildNeighborListGpu(SimGpu* sim);
-
 int main(int argc, char** argv)
 {
    // Prolog
@@ -200,14 +198,15 @@ SimFlat* initSimulation(Command cmd)
      sim->nSteps = 0;
    }
 
-   if (!strcmp(cmd.method, "thread_atom")) sim->method = 0;
-   else if (!strcmp(cmd.method, "warp_atom")) sim->method = 1;
-   else if (!strcmp(cmd.method, "cta_cell")) sim->method = 2;
-   else if (!strcmp(cmd.method, "thread_atom_nl")) sim->method = 3;
-   else if (!strcmp(cmd.method, "cpu_nl")) sim->method = 4;
-   else {printf("Error: You have to specify a valid method: -m [thread_atom,thread_atom_nl,warp_atom,cta_cell,cpu_nl]\n"); exit(-1);}
+   if (!strcmp(cmd.method, "thread_atom")) sim->method = THREAD_ATOM;
+   else if (!strcmp(cmd.method, "warp_atom")) sim->method = WARP_ATOM;
+   else if (!strcmp(cmd.method, "warp_atom_nl")) sim->method = WARP_ATOM_NL;
+   else if (!strcmp(cmd.method, "cta_cell")) sim->method = CTA_CELL;
+   else if (!strcmp(cmd.method, "thread_atom_nl")) sim->method = THREAD_ATOM_NL;
+   else if (!strcmp(cmd.method, "cpu_nl")) sim->method = CPU_NL;
+   else {printf("Error: You have to specify a valid method: -m [thread_atom,thread_atom_nl,warp_atom,warp_atom_nl,cta_cell,cpu_nl]\n"); exit(-1);}
 
-   int useNL = (sim->method == 3 || sim->method == 4)? 1 : 0;
+   int useNL = (sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL || sim->method == CPU_NL)? 1 : 0;
    sim->pot = initPotential(cmd.doeam, cmd.potDir, cmd.potName, cmd.potType);
 
    real_t latticeConstant = cmd.lat;
@@ -246,13 +245,13 @@ SimFlat* initSimulation(Command cmd)
    sim->atomExchange = initAtomHaloExchange(sim->domain, sim->boxes);
 
    // set forces exchange function
-   if (cmd.doeam && sim->method <= 3) {
+   if (cmd.doeam && sim->method < CPU_NL) {
      EamPotential* pot = (EamPotential*) sim->pot;
-     pot->forceExchange = initForceHaloExchange(sim->domain, sim->boxes,sim->method<=3);
+     pot->forceExchange = initForceHaloExchange(sim->domain, sim->boxes,sim->method < CPU_NL);
      // init boundary cell lists
      SetBoundaryCells(sim, pot->forceExchange);
    }
-   if(sim->method == 3 && !cmd.doeam){
+   if((sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL) && !cmd.doeam){
            if (printRank())
                    printf("Gpu neighborlist implementation is currently only supported for the eam potential.\n");
            exit(-1);
@@ -277,7 +276,7 @@ SimFlat* initSimulation(Command cmd)
    computeForce(sim);
    stopTimer(computeForceTimer);
 
-   if(sim->method <= 3)
+   if(sim->method < CPU_NL)
       kineticEnergyGpu(sim);
    else
       kineticEnergy(sim);

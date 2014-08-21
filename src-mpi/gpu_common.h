@@ -47,12 +47,15 @@ void interpolate(InterpolationObjectGpu table, real_t r, real_t &f, real_t &df)
    r = min(r, table.xn);
 
    // compute index
-   r = (r - table.x0) * table.invDx;
-   int ii = (int)floor(r);
+   r = r * table.invDx - table.invDxXx0;
+   
+   real_t ri = floor(r);
+   
+   int ii = (int)ri;
 
    // reset r to fractional distance
-   r = r - ii;
-
+   r = r - ri;
+   
     // using LDG on Kepler only
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
     real_t v0 = __ldg(tt + ii);
@@ -65,12 +68,12 @@ void interpolate(InterpolationObjectGpu table, real_t r, real_t &f, real_t &df)
     real_t v2 = tt[ii + 2];
     real_t v3 = tt[ii + 3];
 #endif
-
+   
    real_t g1 = v2 - v0;
    real_t g2 = v3 - v1;
 
-   f = v1 + 0.5 * r * (g1 + r * (v2 + v0 - 2.0 * v1));
-   df = 0.5 * (g1 + r * (g2 - g1)) * table.invDx;
+     f = v1 + 0.5 * r * (g1 + r * (v2 + v0 - 2.0 * v1));
+     df = (g1 + r * (g2 - g1)) * table.invDxHalf;
 }
 
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 300
@@ -125,6 +128,17 @@ int __shfl(int var, int laneMask, volatile int *smem)
   const int warp_id = threadIdx.x / WARP_SIZE;
   return laneMask >= 0 && laneMask < WARP_SIZE ? smem[WARP_SIZE * warp_id + laneMask] : var;
 }
+
+__device__ __forceinline__
+int __shfl_down(real_t var, unsigned int delta, int width, real_t *smem)
+{
+  smem[threadIdx.x] = var;
+  const int warp_id = threadIdx.x / width;
+  const int lane_id = threadIdx.x % width;
+  return lane_id < width - delta ? smem[width * warp_id + (lane_id + delta)] : var;
+}
+
+
 #else	// >= SM 3.0
 __device__ __forceinline__
 double __shfl_xor(double var, int laneMask)
@@ -141,6 +155,17 @@ double __shfl(double var, int laneMask)
   int hi = __shfl( __double2hiint(var), laneMask );
   return __hiloint2double( hi, lo );
 }
+
+__device__ __forceinline__
+double __shfl_down(double var, unsigned int delta, int width = 32)
+{
+    int lo, hi;
+    asm volatile("mov.b64 {%0,%1}, %2;":"=r"(lo), "=r"(hi):"d"(var));
+    lo = __shfl_down(lo, delta, width);
+    hi = __shfl_down(hi, delta, width);
+    return __hiloint2double(hi, lo);
+}
+
 #endif
 
 #ifndef uint

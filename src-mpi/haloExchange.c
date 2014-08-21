@@ -405,7 +405,7 @@ int loadAtomsBuffer(void* vparms, void* data, int face, char* charBuf)
 
    int nTotalAtomsCellList = 0;
 //   if(sim->method == 3 ||sim->method == 4)
-   if(sim->method == 4)
+   if(sim->method == CPU_NL)
    {
            int* cellList = parms->cellList[face];
 
@@ -459,7 +459,7 @@ void unloadAtomsBuffer(void* vparms, void* data, int face, int bufSize, char* ch
 
    int nBuf = bufSize / sizeof(AtomMsg);
 
-   if(sim->method == 4)
+   if(sim->method == CPU_NL)
    {
 
            AtomMsg* buf = (AtomMsg*) charBuf;

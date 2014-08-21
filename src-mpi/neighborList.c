@@ -39,7 +39,7 @@
 
 #include <assert.h>
 
-EXTERN_C void buildNeighborListGpu(SimGpu* sim, int boundaryFlag); //TODO rename flag (REFACTORING)
+EXTERN_C void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag); //TODO rename flag (REFACTORING)
 
 void buildNeighborListCpu(SimFlat* s);
 int neighborListUpdateRequiredCpu(NeighborList* neighborList, LinkCell*const  boxes, Atoms* const atoms);
@@ -90,9 +90,9 @@ void destroyNeighborList(NeighborList** neighborList)
 /// @param boundaryFlag if  0:build boundary+interior; 1: build boundary; 2: build interior
 void buildNeighborList(SimFlat* sim, int boundaryFlag)
 {
-        if(sim->method == 3){
-           buildNeighborListGpu(&(sim->gpu), boundaryFlag);
-        } else if(sim->method == 4)
+        if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL){
+           buildNeighborListGpu(&(sim->gpu), sim->method, boundaryFlag);
+        } else if(sim->method == CPU_NL)
            buildNeighborListCpu(sim);
         else
                 printf("ERROR: Method not supported!\n");
@@ -200,9 +200,9 @@ void emptyNeighborList(NeighborList* neighborList)
 
 int neighborListUpdateRequired(SimFlat* sim)
 {
-   if(sim->method == 3)
+   if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL)
      return neighborListUpdateRequiredGpu(&(sim->gpu));
-   else if(sim->method == 4)
+   else if(sim->method == CPU_NL)
      return neighborListUpdateRequiredCpu(sim->atoms->neighborList,sim->boxes,sim->atoms);
    else
      return -1;

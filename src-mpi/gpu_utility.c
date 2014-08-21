@@ -334,10 +334,18 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
     gpu->eam_pot.f.xn = pot->f->x0 + pot->f->n / pot->f->invDx;
     gpu->eam_pot.rho.xn = pot->rho->x0 + pot->rho->n / pot->rho->invDx;
     gpu->eam_pot.phi.xn = pot->phi->x0 + pot->phi->n / pot->phi->invDx;
-
+    
     gpu->eam_pot.f.invDx = pot->f->invDx;
     gpu->eam_pot.rho.invDx = pot->rho->invDx;
     gpu->eam_pot.phi.invDx = pot->phi->invDx;
+
+    gpu->eam_pot.f.invDxHalf = pot->f->invDx * 0.5;
+    gpu->eam_pot.rho.invDxHalf = pot->rho->invDx * 0.5;
+    gpu->eam_pot.phi.invDxHalf = pot->phi->invDx * 0.5;
+
+    gpu->eam_pot.f.invDxXx0 = pot->f->invDxXx0;
+    gpu->eam_pot.rho.invDxXx0 = pot->rho->invDxXx0;
+    gpu->eam_pot.phi.invDxXx0 = pot->phi->invDxXx0;
 
     cudaMemcpy(gpu->eam_pot.f.values, pot->f->values-1, (pot->f->n+3) * sizeof(real_t), cudaMemcpyHostToDevice);
     cudaMemcpy(gpu->eam_pot.rho.values, pot->rho->values-1, (pot->rho->n+3) * sizeof(real_t), cudaMemcpyHostToDevice);
