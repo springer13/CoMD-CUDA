@@ -43,6 +43,9 @@ EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int *temp, int num_cells, int 
 EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
 EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
 
+EXTERN_C void emptyHashTableGpu(HashTableGpu* hashTable);
+EXTERN_C void neighborListForceRebuildGpu(struct NeighborListGpuSt* neighborList); 
+
 /// Advance the simulation time to t+dt using a leap frog method
 /// (equivalent to velocity verlet).
 ///
