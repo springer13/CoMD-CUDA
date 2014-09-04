@@ -22,7 +22,7 @@
 #define IDX3D(x,y,z,X,Y) ((z)*((Y)*(X)) + ((y)*(X)) + (x))
 
 /// The maximum number of atoms that can be stored in a link cell.
-#define MAXATOMS 64 
+#define MAXATOMS 256 
 
 #define WARP_SIZE		32
 

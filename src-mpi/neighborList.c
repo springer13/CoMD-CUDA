@@ -40,6 +40,7 @@
 #include <assert.h>
 
 EXTERN_C void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag); //TODO rename flag (REFACTORING)
+EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
 
 void buildNeighborListCpu(SimFlat* s);
 int neighborListUpdateRequiredCpu(NeighborList* neighborList, LinkCell*const  boxes, Atoms* const atoms);
@@ -54,7 +55,7 @@ NeighborList* initNeighborList(const int nLocalBoxes, const real_t skinDistance)
    NeighborList* neighborList = comdMalloc(sizeof(NeighborList)); 
 
    neighborList->nMaxLocal = MAXATOMS*nLocalBoxes; // make this list a little larger to make room for migrated particles
-   neighborList->maxNeighbors = 96;//TODO: choose this value dynamically
+   neighborList->maxNeighbors = 1024;//TODO: choose this value dynamically
    neighborList->skinDistance = skinDistance;
    neighborList->skinDistance2 = skinDistance*skinDistance;
    neighborList->skinDistanceHalf2 = (skinDistance/2.0)*(skinDistance/2.0);
