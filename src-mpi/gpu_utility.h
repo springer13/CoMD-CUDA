@@ -63,4 +63,15 @@ void emptyHaloCellsGpu(SimFlat* sim);
 
 int compactHaloCells(SimFlat* sim, char* h_compactAtoms, int* h_cellOffset);
 
+#define CUDA_CHECK(command)											\
+{														\
+  cudaError_t status = (command);                                                                      		\
+  if (status != cudaSuccess) {                                                                                  \
+    fprintf(stderr, "Error in file %s at line %d\n", __FILE__, __LINE__);                                  	\
+    fprintf(stderr, "CUDA error %d: %s", status, cudaGetErrorString(status));                              	\
+    fprintf(stderr, "\n");                                                                                 	\
+    exit(-1);                                                                                              	\
+  }                                                                                                             \
+}
+
 #endif
