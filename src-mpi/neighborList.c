@@ -36,11 +36,9 @@
 #include "initAtoms.h"
 #include "memUtils.h"
 #include "parallel.h"
+#include "gpu_kernels.h"
 
 #include <assert.h>
-
-EXTERN_C void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag); //TODO rename flag (REFACTORING)
-EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
 
 void buildNeighborListCpu(SimFlat* s);
 int neighborListUpdateRequiredCpu(NeighborList* neighborList, LinkCell*const  boxes, Atoms* const atoms);

@@ -4,16 +4,22 @@
 #include "timestep.h"
 
 #include "CoMDTypes.h"
+
 #include "linkCells.h"
 #include "neighborList.h"
 #include "hashTable.h"
 #include "parallel.h"
 #include "defines.h"
-#include "gpu_neighborList.h"
 #include "performanceTimers.h"
+
+#include "gpu_kernels.h"
+#include "gpu_neighborList.h"
 
 #include <stdio.h>
 
+
+static   void advanceVelocityCpu(SimFlat* sim, int nBoxes, real_t dt);
+static   void advancePositionCpu(SimFlat* sim, int nBoxes, real_t dt);
 
 void redistributeAtomsGpu(SimFlat* sim);
 void redistributeAtomsGpuNL(SimFlat* sim);
@@ -21,30 +27,6 @@ void redistributeAtomsCpuNL(SimFlat* sim);
 
 void advanceVelocity(SimFlat* sim, real_t dt);
 void advancePosition(SimFlat* sim, real_t dt);
-
-// computes local potential and kinetic energies
-EXTERN_C void computeEnergy(SimFlat *sim, real_t *eLocal);	
-
-EXTERN_C void advanceVelocityGpu(SimGpu sim, real_t dt);
-static   void advanceVelocityCpu(SimFlat* sim, int nBoxes, real_t dt);
-EXTERN_C void advancePositionGpu(SimGpu* sim, real_t dt);
-static   void advancePositionCpu(SimFlat* sim, int nBoxes, real_t dt);
-
-EXTERN_C int compactCells(char* compactAtoms, char* work_d, int nCells, int *d_cellList, SimGpu sim_gpu, int* d_cellOffsets, int * d_workScan, real3_old shift);
-
-EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
-EXTERN_C void buildAtomListGpu(SimFlat *sim, cudaStream_t stream);
-EXTERN_C void updateLinkCellsGpu(SimFlat *sim);
-EXTERN_C void sortAtomsGpu(SimFlat *sim, cudaStream_t stream);
-
-EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
-EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int *temp, int num_cells, int *cell_list, cudaStream_t stream);
-
-EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-
-EXTERN_C void emptyHashTableGpu(HashTableGpu* hashTable);
-EXTERN_C void neighborListForceRebuildGpu(struct NeighborListGpuSt* neighborList); 
 
 /// Advance the simulation time to t+dt using a leap frog method
 /// (equivalent to velocity verlet).

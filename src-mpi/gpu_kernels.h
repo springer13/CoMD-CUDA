@@ -30,4 +30,25 @@ EXTERN_C void unloadForceBufferToGpu(char *buf, int nBuf, int nCells, int *cellL
 EXTERN_C void initHashTableGpu(HashTableGpu* hashTable, int nMaxEntries);
 
 EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
+
+EXTERN_C void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag); //TODO rename flag (REFACTORING)
+EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
+
+// computes local potential and kinetic energies
+EXTERN_C void computeEnergy(SimFlat *sim, real_t *eLocal);
+
+EXTERN_C void advanceVelocityGpu(SimGpu sim, real_t dt);
+EXTERN_C void advancePositionGpu(SimGpu* sim, real_t dt);
+
+EXTERN_C void buildAtomListGpu(SimFlat *sim, cudaStream_t stream);
+EXTERN_C void updateLinkCellsGpu(SimFlat *sim);
+EXTERN_C void sortAtomsGpu(SimFlat *sim, cudaStream_t stream);
+
+EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
+EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int *temp, int num_cells, int *cell_list, cudaStream_t stream);
+
+EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
+EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
+
+EXTERN_C void emptyHashTableGpu(HashTableGpu* hashTable);
 #endif

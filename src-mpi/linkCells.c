@@ -17,13 +17,13 @@
 #include "neighborList.h"
 #include "performanceTimers.h"
 #include "CoMDTypes.h"
+#include "gpu_kernels.h"
 
 #define   MIN(A,B) ((A) < (B) ? (A) : (B))
 #define   MAX(A,B) ((A) > (B) ? (A) : (B))
 
 static void copyAtom(LinkCell* boxes, Atoms* atoms, int iAtom, int iBox, int jAtom, int jBox);
 static void getTuple(LinkCell* boxes, int iBox, int* ixp, int* iyp, int* izp);
-EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
 
 int computeHilbertCode(int x, int y, int z) //TODO: This piece of code has been take and modified from: http://codereview.stackexchange.com/questions/26671/faster-3d-hilbert-curve-in-c (add citation)
 {

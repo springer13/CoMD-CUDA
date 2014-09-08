@@ -58,9 +58,6 @@
 #undef EXTERN_C
 
 extern "C"
-int neighborListUpdateRequiredGpu(SimGpu* sim);
-
-extern "C"
 void ljForceGpu(SimGpu sim)
 {
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
