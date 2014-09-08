@@ -45,14 +45,6 @@ typedef struct HashTableGpuSt
 } HashTableGpu;
 
 
-typedef struct LjPotentialGpuSt
-{
-   real_t cutoff;          //!< potential cutoff distance in Angstroms
-   real_t sigma;
-   real_t epsilon;
-
-} LjPotentialGpu;
-
 typedef struct InterpolationObjectGpuSt
 {
    int n;           //!< the number of values in the table
@@ -64,6 +56,18 @@ typedef struct InterpolationObjectGpuSt
    real_t invDxXx0; //!< the starting ordinate range times the inverse of the table spacing
 
 } InterpolationObjectGpu;
+
+typedef struct LjPotentialGpuSt
+{
+   real_t cutoff;          //!< potential cutoff distance in Angstroms
+   real_t sigma;
+   real_t epsilon;
+
+   InterpolationObjectGpu lj_interpolation;
+
+} LjPotentialGpu;
+
+
 
 typedef struct EamPotentialGpuSt
 {

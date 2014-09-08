@@ -44,10 +44,8 @@
 #include "memUtils.h"
 #include "performanceTimers.h"
 
-EXTERN_C int compactCellsGpu(char* work_d, int nCells, int *d_cellList, SimGpu sim_gpu, int* d_cellOffsets, int * d_workScan, real3_old shift, cudaStream_t stream);
-EXTERN_C void unloadAtomsBufferToGpu(char *buf, int nBuf, SimFlat *s, char *gpu_buf, cudaStream_t stream);
-EXTERN_C void loadForceBufferFromGpu(char *buf, int *nbuf, int nCells, int *cellList, int *natoms_buf, int *partial_sums, SimFlat *s, char *gpu_buf, cudaStream_t stream);
-EXTERN_C void unloadForceBufferToGpu(char *buf, int nBuf, int nCells, int *cellList, int *natoms_buf, int *partial_sums, SimFlat *s, char *gpu_buf, cudaStream_t stream);
+#include "gpu_kernels.h"
+
 #define MAX(A,B) ((A) > (B) ? (A) : (B))
 
 /// Don't change the order of the faces in this enum.

@@ -40,16 +40,14 @@
 
 #include <assert.h>
 #include <cuda_runtime.h>
-
-EXTERN_C void emptyNeighborListGpu(NeighborListGpu* neighborList);
+#include "gpu_kernels.h"
 
 /// Initialize Neighborlist. Allocates all required data structures and initializes all
 /// variables. Requires atoms to be initialized and nLocal needs to be set.
 /// \param [in] nLocalBoxes  The index with box iBox of the atom to be moved.
 /// \param [in] skinDistance Skin distance used by buildNeighborList.
-void initNeighborListGpu(NeighborListGpu* neighborList, const int nLocalBoxes, const real_t skinDistance)
+void initNeighborListGpu(SimGpu * sim, NeighborListGpu* neighborList, const int nLocalBoxes, const real_t skinDistance)
 {
-
 
    neighborList->nMaxLocal = MAXATOMS*nLocalBoxes; // make this list a little larger to make room for migrated particles
    neighborList->nMaxNeighbors = MAXNEIGHBORLISTSIZE;
@@ -68,7 +66,7 @@ void initNeighborListGpu(NeighborListGpu* neighborList, const int nLocalBoxes, c
    cudaMalloc((void**)&(neighborList->lastR.y), neighborList->nMaxLocal * sizeof(real_t));
    cudaMalloc((void**)&(neighborList->lastR.z), neighborList->nMaxLocal * sizeof(real_t));  
 
-   emptyNeighborListGpu(neighborList);
+   emptyNeighborListGpu(sim, BOTH);
 
 } 
 

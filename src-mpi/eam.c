@@ -102,18 +102,7 @@
 #include "CoMDTypes.h"
 #include "performanceTimers.h"
 #include "haloExchange.h"
-
-EXTERN_C void updateNeighborsGpu(SimGpu sim, int *temp);
-EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int *temp, int num_cells, int *cell_list, cudaStream_t stream);
-
-EXTERN_C void eamForce1Gpu(SimGpu sim, int method);
-EXTERN_C void eamForce2Gpu(SimGpu sim, int method);
-EXTERN_C void eamForce3Gpu(SimGpu sim, int method);
-
-// latency hiding opt
-EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-EXTERN_C void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
+#include "gpu_kernels.h"
 
 #define MAX(A,B) ((A) > (B) ? (A) : (B))
 
