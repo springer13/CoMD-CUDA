@@ -111,7 +111,7 @@ BasePotential* initLjPot(void)
 
    pot->lat = 3.615;                      // Equilibrium lattice const in Angs
    strcpy(pot->latticeType, "FCC");       // lattice type, i.e. FCC, BCC, etc.
-   pot->cutoff = 2.5*pot->sigma;          // Potential cutoff in Angs
+   pot->cutoff = 5*pot->sigma;          // Potential cutoff in Angs
 
    strcpy(pot->name, "Cu");
    pot->atomicNo = 29;

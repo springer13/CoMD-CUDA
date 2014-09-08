@@ -243,7 +243,10 @@ SimFlat* initSimulation(Command cmd)
 
    // set atoms exchange function
    sim->atomExchange = initAtomHaloExchange(sim->domain, sim->boxes);
-
+    if(!cmd.doeam)
+    {
+        SetBoundaryCells(sim, sim->atomExchange);
+    }
    // set forces exchange function
    if (cmd.doeam && sim->method < CPU_NL) {
      EamPotential* pot = (EamPotential*) sim->pot;

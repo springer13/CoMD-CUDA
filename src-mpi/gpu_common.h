@@ -30,7 +30,7 @@
 #define __GPU_COMMON_H_
 
 #include "defines.h"
-
+#include <cuda.h>
 /// Interpolate a table to determine f(r) and its derivative f'(r).
 ///
 /// \param [in] table Interpolation table.
@@ -140,6 +140,8 @@ int __shfl_down(real_t var, unsigned int delta, int width, real_t *smem)
 
 
 #else	// >= SM 3.0
+
+#if (CUDA_VERSION < 6050)
 __device__ __forceinline__
 double __shfl_xor(double var, int laneMask)
 {
@@ -165,7 +167,7 @@ double __shfl_down(double var, unsigned int delta, int width = 32)
     hi = __shfl_down(hi, delta, width);
     return __hiloint2double(hi, lo);
 }
-
+#endif
 #endif
 
 #ifndef uint

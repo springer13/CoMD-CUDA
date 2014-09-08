@@ -33,6 +33,8 @@
 #include "gpu_utility.h"
 #include "gpu_neighborList.h"
 
+#include "gpu_kernels.h"
+
 // fallback for 5.0
 #if (CUDA_VERSION < 5050)
   cudaError_t cudaStreamCreateWithPriority(cudaStream_t *stream, unsigned int flags, int priority) {
@@ -194,12 +196,6 @@ void AllocateGpu(SimFlat *sim, int do_eam, real_t skinDistance)
   cudaMalloc((void**)&gpu->neighbor_atoms, nLocalBoxes * N_MAX_NEIGHBORS * MAXATOMS * sizeof(int));
   cudaMalloc((void**)&gpu->num_neigh_atoms, nLocalBoxes * sizeof(int));
 
-  initNeighborListGpu(&(gpu->atoms.neighborList),nLocalBoxes, skinDistance);
-  initLinkCellsGpu(sim, &(gpu->boxes));
-
-  int nMaxHaloParticles = (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes)*MAXATOMS;
-  initHashTableGpu(&(gpu->d_hashTable), 2*nMaxHaloParticles);
-
   // total # of atoms in local boxes
   int n = 0;
   for (int iBox=0; iBox < sim->boxes->nLocalBoxes; iBox++)
@@ -214,6 +210,13 @@ void AllocateGpu(SimFlat *sim, int do_eam, real_t skinDistance)
   cudaMalloc((void**)&gpu->b_list.atoms, n * sizeof(int));
   cudaMalloc((void**)&gpu->b_list.cells, n * sizeof(int));
 
+  initNeighborListGpu(gpu, &(gpu->atoms.neighborList),nLocalBoxes, skinDistance);
+  initLinkCellsGpu(sim, &(gpu->boxes));
+
+  int nMaxHaloParticles = (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes)*MAXATOMS;
+  initHashTableGpu(&(gpu->d_hashTable), 2*nMaxHaloParticles);
+
+
   // init EAM arrays
   if (do_eam)  
   {
@@ -225,6 +228,12 @@ void AllocateGpu(SimFlat *sim, int do_eam, real_t skinDistance)
 
     cudaMalloc((void**)&gpu->eam_pot.dfEmbed, r_size);
     cudaMalloc((void**)&gpu->eam_pot.rhobar, r_size);
+  }
+  else //init LJ iterpolation table
+  {
+    LjPotential * pot = (LjPotential*) sim->pot;
+//TODO: configurable length
+   cudaMalloc((void**)&(gpu->lj_pot.lj_interpolation.values), 1003 * sizeof(real_t));
   }
 
   // initialize host data as well
@@ -312,6 +321,33 @@ void DestroyGpu(SimFlat *flat)
   free(host->a_list.cells);
 }
 
+void initLJinterpolation(LjPotentialGpu * pot)
+{
+    pot->lj_interpolation.x0 = 0.5 * pot->sigma;
+    pot->lj_interpolation.n = 1000;
+    pot->lj_interpolation.invDx = pot->lj_interpolation.n/(pot->cutoff - pot->lj_interpolation.x0);
+    pot->lj_interpolation.invDxHalf = pot->lj_interpolation.invDx * 0.5;
+    pot->lj_interpolation.invDxXx0 = pot->lj_interpolation.invDx * pot->lj_interpolation.x0;
+    pot->lj_interpolation.xn = pot->lj_interpolation.x0 + pot->lj_interpolation.n / pot->lj_interpolation.invDx;
+    real_t * temp = (real_t *) malloc((pot->lj_interpolation.n+3) * sizeof(real_t));
+    real_t sigma = pot->sigma;
+    real_t epsilon = pot->epsilon;
+    real_t rCut2 = pot->cutoff * pot->cutoff;
+    real_t s6 = sigma * sigma * sigma * sigma * sigma * sigma;
+    real_t rCut6 = s6 / (rCut2*rCut2*rCut2);
+    real_t eShift = rCut6 * (rCut6 - 1.0);
+   for(int i = 0; i < pot->lj_interpolation.n+3; ++i)
+   {        
+       real_t x = pot->lj_interpolation.x0 + (i-1)/pot->lj_interpolation.invDx;
+       real_t r2 = 1.0/(x*x);
+       real_t r6 = r2*r2*r2;
+       temp[i] = 4 * epsilon * (r6 * (r6 - 1.0) - eShift);
+  }
+  cudaMemcpy(pot->lj_interpolation.values, temp, (pot->lj_interpolation.n+3)*sizeof(real_t), cudaMemcpyHostToDevice);
+
+  free(temp);
+}
+
 void CopyDataToGpu(SimFlat *sim, int do_eam)
 {
   SimGpu *gpu = &sim->gpu;
@@ -357,6 +393,7 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
     gpu->lj_pot.sigma = pot->sigma;
     gpu->lj_pot.cutoff = pot->cutoff;
     gpu->lj_pot.epsilon = pot->epsilon;
+    initLJinterpolation(&(gpu->lj_pot));
   }
 
   int total_boxes = sim->boxes->nTotalBoxes;

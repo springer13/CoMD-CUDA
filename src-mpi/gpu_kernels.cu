@@ -52,6 +52,10 @@
 
 #include "hashTable.h"
 
+#undef EXTERN_C
+#define EXTERN_C extern "C"
+#include "gpu_kernels.h"
+#undef EXTERN_C
 
 extern "C"
 int neighborListUpdateRequiredGpu(SimGpu* sim);

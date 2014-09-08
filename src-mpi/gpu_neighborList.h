@@ -40,7 +40,7 @@ struct SimFlatSt;
 struct AtomsSt;
 
 /// Initialized the NeighborList data stucture
-void initNeighborListGpu(struct NeighborListGpuSt* neighborList, const int nLocalBoxes, const real_t skinDistance);
+void initNeighborListGpu(struct SimGpuSt * sim, struct NeighborListGpuSt* neighborList, const int nLocalBoxes, const real_t skinDistance);
 
 /// frees all data associated with *neighborList
 void destroyNeighborListGpu(struct NeighborListGpuSt** neighborList);
