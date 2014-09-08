@@ -78,10 +78,10 @@
 
 #include "gpu_types.h"
 #include "gpu_utility.h"
+#include "gpu_kernels.h"
 
 #define POT_SHIFT 1.0
 
-EXTERN_C void ljForceGpu(SimGpu sim);
 
 static int ljForce(SimFlat* s);
 int ljForceCpuNL(SimFlat* sim);

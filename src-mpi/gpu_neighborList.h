@@ -29,8 +29,8 @@
 /// \file
 /// Functions to maintain neighbor list of each atom. 
 
-#ifndef __NEIGHBOR_LIST_H_
-#define __NEIGHBOR_LIST_H_
+#ifndef _GPU_NEIGHBOR_LIST_H_
+#define _GPU_NEIGHBOR_LIST_H_
 
 #include "mytype.h"
 
