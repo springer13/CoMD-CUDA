@@ -124,6 +124,7 @@ int getBoxFromCoord(LinkCellGpu cells, real_t rx, real_t ry, real_t rz)
    return getBoxFromTuple(cells, ix, iy, iz);
 }
 
+template<int usePairlist>
 __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
 {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -155,6 +156,12 @@ __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
     sim.atoms.p.z[jOff] = sim.atoms.p.z[iOff];
     sim.atoms.gid[jOff] = sim.atoms.gid[iOff];
     sim.atoms.iSpecies[jOff] = sim.atoms.iSpecies[iOff];
+    if(usePairlist)
+    {
+        sim.atoms.neighborList.lastR.x[jOff] = sim.atoms.neighborList.lastR.x[iOff];
+        sim.atoms.neighborList.lastR.y[jOff] = sim.atoms.neighborList.lastR.y[iOff];
+        sim.atoms.neighborList.lastR.z[jOff] = sim.atoms.neighborList.lastR.z[iOff];
+    }
     sim.a_list.atoms[tid] = jAtom;
     sim.a_list.cells[tid] = jBox;
   }
@@ -163,6 +170,7 @@ __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
 }
 
 // TODO: improve parallelism, currently it's one thread per cell!
+template <int usePairlist>
 __global__ void CompactAtoms(SimGpu sim, int num_cells, int *flags)
 {
   // only process local cells
@@ -187,6 +195,13 @@ __global__ void CompactAtoms(SimGpu sim, int num_cells, int *flags)
           sim.atoms.p.z[jOff] = sim.atoms.p.z[iOff];
           sim.atoms.gid[jOff] = sim.atoms.gid[iOff];
           sim.atoms.iSpecies[jOff] = sim.atoms.iSpecies[iOff];
+          if(usePairlist)
+          {
+              sim.atoms.neighborList.lastR.x[jOff] = sim.atoms.neighborList.lastR.x[iOff];
+              sim.atoms.neighborList.lastR.y[jOff] = sim.atoms.neighborList.lastR.y[iOff];
+              sim.atoms.neighborList.lastR.z[jOff] = sim.atoms.neighborList.lastR.z[iOff];
+          }
+
         }
         jAtom++;
       }
@@ -450,12 +465,11 @@ void computeOffsets(int nlUpdateRequired, SimFlat* sim,
 {  
   int grid = (nBuf + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
-
   // computeBoxIds(), compute, ... are required to assure sequential ordering!
   if(nlUpdateRequired){
 
      computeBoxIds<<<grid, block, 0, stream>>>(sim->gpu.boxes, r, d_boxId, nBuf); //fill d_boxId with iBox for each atom
-     if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL){
+     if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL || sim->usePairlist){
         //compute iOff for each particle and store the result to iOffsetOut
         computeOffsetsUpdateReq<1><<<grid, block, 0, stream>>>(d_iOffset, nBuf, sim->gpu.boxes.nAtoms, d_boxId, sim->gpu);
         sim->gpu.d_hashTable.nEntriesPut += nBuf;

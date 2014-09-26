@@ -31,7 +31,7 @@
 // all threads shared the same set of neighbors
 // so we can store neighbor positions in smem
 // 1 warp processes 1 atom
-template<int step>
+template<int step, bool spline>
 __global__
 __launch_bounds__(CTA_CELL_CTA, CTA_CELL_ACTIVE_CTAS)
 void EAM_Force_cta_cell(SimGpu sim, int *cells_list)
@@ -176,27 +176,49 @@ void EAM_Force_cta_cell(SimGpu sim, int *cells_list)
 	  dz = irz[iAtom] - rz[j];
 
 	  r2 = dx*dx + dy*dy + dz*dz;
-	  real_t r = sqrt_opt(r2);	
 
-	  real_t phiTmp, dPhi, rhoTmp, dRho;
-	  if (step == 1) {
-	    interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
-	    interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-	  }
-	  else {
-	    // step = 3
-	    // TODO: this is not optimal
-	    interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-	    int iOff = iBox * MAXATOMS + iAtom;
+      real_t phiTmp, dPhi, rhoTmp, dRho;
+      if(!spline)
+      {
+          real_t r = sqrt_opt(r2);	
+
+          if (step == 1) {
+              interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
+              interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+          }
+          else {
+              // step = 3
+              // TODO: this is not optimal
+              interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+              int iOff = iBox * MAXATOMS + iAtom;
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350
-            dPhi = (__ldg(sim.eam_pot.dfEmbed + iOff) + fe[j]) * dRho;
+              dPhi = (__ldg(sim.eam_pot.dfEmbed + iOff) + fe[j]) * dRho;
 #else
-	    dPhi = (sim.eam_pot.dfEmbed[iOff] + fe[j]) * dRho;
+              dPhi = (sim.eam_pot.dfEmbed[iOff] + fe[j]) * dRho;
 #endif
-	  }
-	
-	  dPhi /= r;
+          }
 
+          dPhi /= r;
+      }
+      else
+      {
+          if (step == 1) {
+              interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
+              interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+          }
+          else {
+              // step = 3
+              // TODO: this is not optimal
+              interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+              int iOff = iBox * MAXATOMS + iAtom;
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350
+              dPhi = (__ldg(sim.eam_pot.dfEmbed + iOff) + fe[j]) * dRho;
+#else
+              dPhi = (sim.eam_pot.dfEmbed[iOff] + fe[j]) * dRho;
+#endif
+          }
+
+      }
 	  // update forces
 	  reg_ifx -= dPhi * dx;
 	  reg_ify -= dPhi * dy;
@@ -255,9 +277,8 @@ void EAM_Force_cta_cell(SimGpu sim, int *cells_list)
   }
 }
 
-template <>
 __global__
-void EAM_Force_cta_cell<2>(SimGpu sim, int *cell_list)
+void EAM_Force_cta_cell2(SimGpu sim, int *cell_list)
 {
   // compute box ID and local atom ID
   int iAtom = threadIdx.x;

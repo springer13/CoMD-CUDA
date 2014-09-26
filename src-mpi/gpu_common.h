@@ -31,6 +31,14 @@
 
 #include "defines.h"
 #include <cuda.h>
+
+__device__ __forceinline__ float sqrt_approx(float f)
+{
+    float ret;
+    asm ("sqrt.approx.ftz.f32 %0, %1;" : "=f"(ret) : "f"(f));
+    return ret;
+}
+
 /// Interpolate a table to determine f(r) and its derivative f'(r).
 ///
 /// \param [in] table Interpolation table.
@@ -45,7 +53,7 @@ void interpolate(InterpolationObjectGpu table, real_t r, real_t &f, real_t &df)
    // check boundaries
    r = max(r, table.x0);
    r = min(r, table.xn);
-
+    
    // compute index
    r = r * table.invDx - table.invDxXx0;
    
@@ -75,6 +83,50 @@ void interpolate(InterpolationObjectGpu table, real_t r, real_t &f, real_t &df)
      f = v1 + 0.5 * r * (g1 + r * (v2 + v0 - 2.0 * v1));
      df = (g1 + r * (g2 - g1)) * table.invDxHalf;
 }
+
+/// Interpolate using spline coefficients table 
+/// to determine f(r) and its derivative f'(r).
+///
+/// \param [in] table Table with spline coefficients.
+/// \param [in] r2 Square of point where function value is needed.
+/// \param [out] f The interpolated value of f(r).
+/// \param [out] df The interpolated value of 1/r*df(r)/dr.
+__inline__ __device__
+void interpolateSpline(InterpolationSplineObjectGpu table, real_t r2, real_t &f, real_t &df)
+{
+   const real_t* tt = table.coefficients; // alias
+
+   float r = sqrt_approx(r2);
+
+   // check boundaries
+   r = max(r, table.x0);
+   r = min(r, table.xn);
+    
+   // compute index
+   r = r * table.invDx - table.invDxXx0;
+   
+   real_t ri = floor(r);
+   
+   int ii = 4*(int)ri;
+
+    // using LDG on Kepler only
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+    real_t a = __ldg(tt + ii);
+    real_t b = __ldg(tt + ii + 1);
+    real_t c = __ldg(tt + ii + 2);
+    real_t d = __ldg(tt + ii + 3);
+#else
+    real_t a = tt[ii];
+    real_t b = tt[ii + 1];
+    real_t c = tt[ii + 2];
+    real_t d = tt[ii + 3];
+#endif
+   
+     real_t tmp = a*r2+b;
+     f = (tmp*r2+c)*r2+d;
+     df =2*((3*tmp-b)*r2+c);
+}
+
 
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 300
 // emulate shuffles through shared memory for old devices (SLOW)

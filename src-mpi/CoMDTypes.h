@@ -124,6 +124,13 @@ typedef struct SimFlatSt
    int *tmp_sort;		// temp array for merge sort
    char *gpu_atoms_buf;		// buffer for atoms exchange
    char *gpu_force_buf;		// buffer for forces exchange
+
+   int ljInterpolation;     //<! compute Lennard-Jones potential using interpolation
+   int spline;              //<! use splines for interpolation
+
+   int usePairlist;         //<! use pairlists for cta_cell method in Lennard-Jones computation
+
+   real_t skinDistance;
    
 } SimFlat;
 

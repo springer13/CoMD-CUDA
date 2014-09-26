@@ -27,7 +27,7 @@
  ************************************************************************/
 
 // templated for the 1st and 3rd EAM passes
-template<int step>
+template<int step, bool spline>
 __global__
 __launch_bounds__(WARP_ATOM_CTA, WARP_ATOM_ACTIVE_CTAS)
 void EAM_Force_warp_atom(SimGpu sim, AtomListGpu list)
@@ -114,21 +114,37 @@ void EAM_Force_warp_atom(SimGpu sim, AtomListGpu list)
     real_t dz = irz - sim.atoms.r.z[jOff];
 
     real_t r2 = dx*dx + dy*dy + dz*dz;
-    real_t r = sqrt(r2);
-
     real_t phiTmp, dPhi, rhoTmp, dRho;
-    if (step == 1) {
-      interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
-      interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-    }
-    else {
-      // step = 3
-      interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-      dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
-    }
+    if(!spline)
+    {
+        real_t r = sqrt(r2);
 
-    dPhi /= r;
+        if (step == 1) {
+            interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
+            interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+        }
+        else {
+            // step = 3
+            interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+            dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+        }
 
+        dPhi /= r;
+    }
+    else
+    {
+        if(step == 1) {
+            interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
+            interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+        }
+        else
+        {
+            //step 3
+            interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+            dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+        }
+
+    }
     // update forces
     ifx -= dPhi * dx;
     ify -= dPhi * dy;
@@ -166,7 +182,7 @@ void EAM_Force_warp_atom(SimGpu sim, AtomListGpu list)
 
 
 /// templated for the 1st and 3rd EAM passes using the neighborlist
-template<int step, int packSize, int maxNeighbors>
+template<int step, int packSize, int maxNeighbors, bool spline>
 __global__
 __launch_bounds__(THREAD_ATOM_CTA, WARP_ATOM_NL_CTAS)
 void EAM_Force_warp_atom_NL(SimGpu sim, AtomListGpu list, real_t rCut2)
@@ -244,21 +260,37 @@ void EAM_Force_warp_atom_NL(SimGpu sim, AtomListGpu list, real_t rCut2)
         if (r2 <= rCut2 && r2 > 0.0) 
         {
 
-            real_t r = sqrt(r2);
-
             real_t phiTmp, dPhi, rhoTmp, dRho;
-            if (step == 1) {
-                interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
-                interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-            }
-            else {
-                // step = 3
-                interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-                dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
-            }
+            if(!spline)
+            {
+                real_t r = sqrt(r2);
 
-            dPhi /= r;
+                if (step == 1) {
+                    interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
+                    interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+                }
+                else {
+                    // step = 3
+                    interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+                    dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+                }
 
+                dPhi /= r;
+            }
+            else
+            {
+                if(step == 1) {
+                    interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
+                    interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+                }
+                else
+                {
+                    //step 3
+                    interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+                    dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+                }
+
+            }
             // update forces
             ifx -= dPhi * dx;
             ify -= dPhi * dy;

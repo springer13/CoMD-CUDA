@@ -67,4 +67,14 @@
 
 #define VECTOR_WIDTH 4
 
+//size of shared memory used in cta_cell kernel for Lennard-Jones
+//it can't be less than CTA_CELL_CTA
+#define SHARED_SIZE_CTA_CELL 128 
+
+//Number of atoms covered by a single entry of pairlist
+//Cannot be bigger than 1024 (resulting in 32x32 blocks)
+#define PAIRLIST_ATOMS_PER_INT 1024
+
+#define PAIRLIST_STEP (PAIRLIST_ATOMS_PER_INT/32)
+
 #endif

@@ -43,6 +43,7 @@
 #include "gpu_neighborList.h"
 
 #include "gpu_lj_thread_atom.h"
+#include "gpu_lj_cta_cell.h"
 #include "gpu_eam_thread_atom.h"
 #include "gpu_eam_warp_atom.h"
 #include "gpu_eam_cta_cell.h"
@@ -58,12 +59,58 @@
 #undef EXTERN_C
 
 extern "C"
-void ljForceGpu(SimGpu sim)
+void ljForceGpu(SimGpu * sim, int interpolation, int num_cells, int * cells_list, real_t plcutoff, int method)
 {
-  cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  int grid = (sim.a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-  int block = THREAD_ATOM_CTA;
-  LJ_Force_thread_atom<<<grid, block>>>(sim, sim.a_list);
+    if(method != CTA_CELL)
+        cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+    else
+        cudaDeviceSetCacheConfig(cudaFuncCachePreferShared);
+  if(method == THREAD_ATOM)
+  {
+      int grid = (sim->a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+      int block = THREAD_ATOM_CTA;
+      if(interpolation == 0)
+          LJ_Force_thread_atom<<<grid, block>>>(*sim, (*sim).a_list);
+      else
+          LJ_Force_thread_atom_interpolation<<<grid, block>>>(*sim, (*sim).a_list);
+  }
+  else if(method == CTA_CELL)
+  {
+      if(!sim->usePairlist)
+      {
+          int grid = num_cells;
+          int block = CTA_CELL_CTA;
+            
+          real_t sigma = sim->lj_pot.sigma;
+          
+          const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
+
+          LJ_Force_cta_cell<<<grid, block>>>(*sim, cells_list, sim->lj_pot.cutoff*sim->lj_pot.cutoff, s6);
+      }
+      else
+      {
+          int grid = num_cells;
+          int block = CTA_CELL_CTA;
+
+          real_t sigma = sim->lj_pot.sigma;
+
+          const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
+          
+          if(sim->genPairlist)
+          {
+              LJ_Force_cta_cell_pairlist<true, PAIRLIST_ATOMS_PER_INT><<<grid, block>>>(*sim, cells_list, sim->lj_pot.cutoff*sim->lj_pot.cutoff, s6, plcutoff);
+              sim->genPairlist = 0;
+              sim->atoms.neighborList.forceRebuildFlag = 0;
+          }
+          else
+          {
+              LJ_Force_cta_cell_pairlist<false, PAIRLIST_ATOMS_PER_INT><<<grid, block>>>(*sim, cells_list, sim->lj_pot.cutoff*sim->lj_pot.cutoff, s6, plcutoff);
+          }
+          
+      }
+  }
+  if(method == CTA_CELL)
+      cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
 }
 
 template<int step>
@@ -97,55 +144,86 @@ int compute_eam_smem_size(SimGpu sim)
 }
 
 template<int step>
-void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream = NULL)
+void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, int spline, cudaStream_t stream = NULL)
 {
-  assert(method < CPU_NL);
-  if (method == THREAD_ATOM) { 
-    
-    int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int block = THREAD_ATOM_CTA;
-    EAM_Force_thread_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
-  }
-  else if (method == WARP_ATOM) {
-    int block = WARP_ATOM_CTA;
-    int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
-    EAM_Force_warp_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
-  } 
-  else if (method == CTA_CELL) {
-    cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
-    int block = CTA_CELL_CTA;
-    int grid = num_cells;
-    int smem = compute_eam_smem_size<step>(sim);
-    EAM_Force_cta_cell<step><<<grid, block, smem, stream>>>(sim, cells_list);
-    cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  }else if (method == THREAD_ATOM_NL) { 
-    int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int block = THREAD_ATOM_CTA;
-    EAM_Force_thread_atom_NL<step><<<grid, block, 0, stream>>>(sim, atoms_list);
-  }else if (method == WARP_ATOM_NL) { 
-    int grid1 = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int grid2 = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int block = THREAD_ATOM_CTA;
-    if(step == 2)
-        EAM_Force_thread_atom_NL<step><<<grid1, block, 0, stream>>>(sim, atoms_list);
+    assert(method < CPU_NL);
+    if(spline)
+    {
+        if (method == THREAD_ATOM) { 
+
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }
+        else if (method == WARP_ATOM) {
+            int block = WARP_ATOM_CTA;
+            int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
+            EAM_Force_warp_atom<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
+        } 
+        else if (method == CTA_CELL) {
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
+            int block = CTA_CELL_CTA;
+            int grid = num_cells;
+            int smem = compute_eam_smem_size<step>(sim);
+            EAM_Force_cta_cell<step, true><<<grid, block, smem, stream>>>(sim, cells_list);
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+        }else if (method == THREAD_ATOM_NL) { 
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom_NL<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }else if (method == WARP_ATOM_NL) { 
+            int grid = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, true><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+        }
+
+    }
     else
-        EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE ><<<grid2, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
-  }
+    {
+        if (method == THREAD_ATOM) { 
+
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }
+        else if (method == WARP_ATOM) {
+            int block = WARP_ATOM_CTA;
+            int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
+            EAM_Force_warp_atom<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
+        } 
+        else if (method == CTA_CELL) {
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
+            int block = CTA_CELL_CTA;
+            int grid = num_cells;
+            int smem = compute_eam_smem_size<step>(sim);
+            EAM_Force_cta_cell<step, false><<<grid, block, smem, stream>>>(sim, cells_list);
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+        }else if (method == THREAD_ATOM_NL) { 
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom_NL<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }else if (method == WARP_ATOM_NL) { 
+            int grid = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, false><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+        }
+
+    }
 }
 
 template<>
-void eamForce<2>(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce<2>(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, int spline, cudaStream_t stream)
 {
   assert(method < CPU_NL);
   if (method == THREAD_ATOM || method == WARP_ATOM || method == THREAD_ATOM_NL || method == WARP_ATOM_NL) {
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
-    EAM_Force_thread_atom<2><<<grid, block, 0, stream>>>(sim, atoms_list);
+    EAM_Force_thread_atom2<<<grid, block, 0, stream>>>(sim, atoms_list);
   }
   else if (method == CTA_CELL) {
     int grid = num_cells;
     int block = CTA_CELL_CTA;
-    EAM_Force_cta_cell<2><<<grid, block, 0, stream>>>(sim, cells_list);
+    EAM_Force_cta_cell2<<<grid, block, 0, stream>>>(sim, cells_list);
   }
 }
 
@@ -176,42 +254,42 @@ void updateNeighborsGpu(SimGpu sim, int *temp)
 }
 
 extern "C"
-void eamForce1Gpu(SimGpu sim, int method)
+void eamForce1Gpu(SimGpu sim, int method, int spline)
 {
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  eamForce<1>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method);
+  eamForce<1>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method, spline);
 }
 
 // async launch, latency hiding opt
 extern "C" 
-void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline)
 {
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  eamForce<1>(sim, atoms_list, num_cells, cells_list, method, stream);
+  eamForce<1>(sim, atoms_list, num_cells, cells_list, method,spline, stream);
 }
 
 extern "C"
-void eamForce2Gpu(SimGpu sim, int method)
+void eamForce2Gpu(SimGpu sim, int method, int spline)
 {
-  eamForce<2>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method);
+  eamForce<2>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method, spline);
 }
 
 extern "C"
-void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline)
 {
-  eamForce<2>(sim, atoms_list, num_cells, cells_list, method, stream);
+  eamForce<2>(sim, atoms_list, num_cells, cells_list, method, spline, stream);
 }
 
 extern "C"
-void eamForce3Gpu(SimGpu sim, int method)
+void eamForce3Gpu(SimGpu sim, int method, int spline)
 {
-  eamForce<3>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method);
+  eamForce<3>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method, spline);
 }
 
 extern "C" 
-void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline)
 {
-  eamForce<3>(sim, atoms_list, num_cells, cells_list, method, stream);
+  eamForce<3>(sim, atoms_list, num_cells, cells_list, method, spline, stream);
 }
 
 extern "C"
@@ -340,7 +418,6 @@ extern "C"
 void updateLinkCellsGpu(SimFlat *sim)
 {
   int *flags = sim->flags;
-
   //empty haloCells
   cudaMemset(sim->gpu.boxes.nAtoms + sim->boxes->nLocalBoxes, 0, (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes) * sizeof(int));
 
@@ -350,12 +427,17 @@ void updateLinkCellsGpu(SimFlat *sim)
   // 1 thread updates 1 atom
   int grid = (sim->gpu.a_list.n + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
-  UpdateLinkCells<<<grid, block>>>(sim->gpu, sim->gpu.boxes, flags);
-
+  if(sim->usePairlist)
+      UpdateLinkCells<true><<<grid, block>>>(sim->gpu, sim->gpu.boxes, flags);
+  else
+      UpdateLinkCells<false><<<grid, block>>>(sim->gpu, sim->gpu.boxes, flags);
   // 1 thread updates 1 cell
   grid = (sim->boxes->nLocalBoxes + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   block = THREAD_ATOM_CTA;
-  CompactAtoms<<<grid, block>>>(sim->gpu, sim->boxes->nLocalBoxes, flags);
+  if(sim->usePairlist)
+      CompactAtoms<true><<<grid, block>>>(sim->gpu, sim->boxes->nLocalBoxes, flags);
+  else
+      CompactAtoms<false><<<grid, block>>>(sim->gpu, sim->boxes->nLocalBoxes, flags);
 
   // update max # of atoms per cell
   cudaMemcpy(&sim->gpu.max_atoms_cell, &flags[sim->boxes->nLocalBoxes * MAXATOMS], sizeof(int), cudaMemcpyDeviceToHost);
@@ -589,9 +671,62 @@ void updateNeighborListRequriedKernel(SimGpu sim, int* updateNeighborListRequire
   real_t dx = sim.atoms.r.x[iOff] - sim.atoms.neighborList.lastR.x[tid];
   real_t dy = sim.atoms.r.y[iOff] - sim.atoms.neighborList.lastR.y[tid];
   real_t dz = sim.atoms.r.z[iOff] - sim.atoms.neighborList.lastR.z[tid];
- 
+
   if( (dx*dx + dy*dy + dz*dz) > sim.atoms.neighborList.skinDistanceHalf2 )
           *updateNeighborListRequired = 1;
+}
+
+__global__
+__launch_bounds__(CTA_CELL_CTA,CTA_CELL_ACTIVE_CTAS)
+void updatePairlistRequiredKernel(SimGpu sim, int * updatePairlistRequired)
+{
+    const int iBox = blockIdx.x;
+    const int nAtoms = sim.boxes.nAtoms[iBox];
+
+    for(int iAtom = threadIdx.x; iAtom < nAtoms; iAtom += blockDim.x)
+    {
+        int iOff = iBox * MAXATOMS + iAtom;
+
+        real_t dx = sim.atoms.r.x[iOff] - sim.atoms.neighborList.lastR.x[iOff];
+        real_t dy = sim.atoms.r.y[iOff] - sim.atoms.neighborList.lastR.y[iOff];
+        real_t dz = sim.atoms.r.z[iOff] - sim.atoms.neighborList.lastR.z[iOff];
+
+        if( (dx*dx + dy*dy + dz*dz) > sim.atoms.neighborList.skinDistanceHalf2 )
+        {
+            *updatePairlistRequired = 1;
+            return;
+        }
+
+    }
+}
+
+// Function checks 
+extern "C"
+int pairlistUpdateRequiredGpu(SimGpu * sim)
+{
+    if(sim->atoms.neighborList.forceRebuildFlag == 1)
+    {
+        sim->atoms.neighborList.updateNeighborListRequired = 1;
+    }
+    else if(sim->atoms.neighborList.updateNeighborListRequired == -1)
+    {
+        int grid = sim->boxes.nLocalBoxes;
+        int block = CTA_CELL_CTA;
+        int *d_updatePairlistRequired;
+        int h_updatePairlistRequired; 
+        cudaMalloc(&d_updatePairlistRequired, sizeof(int));
+        cudaMemset(d_updatePairlistRequired, 0, sizeof(int));
+
+        updatePairlistRequiredKernel<<<grid, block>>>(*sim, d_updatePairlistRequired);
+
+        cudaMemcpy(&h_updatePairlistRequired,d_updatePairlistRequired, sizeof(int), cudaMemcpyDeviceToHost);
+
+        int tmpUpdatePairlistRequired = h_updatePairlistRequired;
+        
+        sim->atoms.neighborList.updateNeighborListRequired = tmpUpdatePairlistRequired;
+    }
+
+    return sim->atoms.neighborList.updateNeighborListRequired;
 }
 
 /// \param [inout] neighborList NeighborList (the only value that might be changed is updateNeighborListRequired
@@ -599,7 +734,6 @@ void updateNeighborListRequriedKernel(SimGpu sim, int* updateNeighborListRequire
 extern "C"
 int neighborListUpdateRequiredGpu(SimGpu* sim)
 {
-        
         if(sim->atoms.neighborList.forceRebuildFlag== 1){
                 sim->atoms.neighborList.updateNeighborListRequired = 1; 
         }else if(sim->atoms.neighborList.updateNeighborListRequired == -1){
@@ -607,7 +741,6 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
                 //only do a real neighborlistupdate check if the particles have moved (indicated by updateNeighborListRequired == -1)
                 int grid = (sim->a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
                 int block = THREAD_ATOM_CTA;
-
                 int *d_updateNeighborListRequired;
                 int h_updateNeighborListRequired; 
                 cudaMalloc(&d_updateNeighborListRequired, sizeof(int));
@@ -623,7 +756,7 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
                 //all nodes have to do so.
 //                maxIntParallel(&h_updateNeighborListRequired, &tmpUpdateNeighborListRequired, 1); 
                 cudaFree(d_updateNeighborListRequired);
-
+                        
                 if(tmpUpdateNeighborListRequired > 0)
                         sim->atoms.neighborList.updateNeighborListRequired = 1; 
                 else

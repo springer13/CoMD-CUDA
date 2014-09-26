@@ -57,6 +57,17 @@ typedef struct InterpolationObjectGpuSt
 
 } InterpolationObjectGpu;
 
+typedef struct InterpolationSplineObjectGpuSt
+{
+    int n;
+    //We do not need precision here
+    float x0;  
+    float xn;
+    float invDx;
+    float invDxXx0;
+    real_t * coefficients;
+} InterpolationSplineObjectGpu;
+
 typedef struct LjPotentialGpuSt
 {
    real_t cutoff;          //!< potential cutoff distance in Angstroms
@@ -64,6 +75,8 @@ typedef struct LjPotentialGpuSt
    real_t epsilon;
 
    InterpolationObjectGpu lj_interpolation;
+
+   real_t plcutoff;        //!< cutoff for pairlist construction
 
 } LjPotentialGpu;
 
@@ -76,6 +89,10 @@ typedef struct EamPotentialGpuSt
    InterpolationObjectGpu phi;  //!< Pair energy
    InterpolationObjectGpu rho;  //!< Electron Density
    InterpolationObjectGpu f;    //!< Embedding Energy
+
+   InterpolationSplineObjectGpu phiS;  //!< Pair energy
+   InterpolationSplineObjectGpu rhoS;  //!< Electron Density
+   InterpolationSplineObjectGpu fS;    //!< Embedding Energy
 
    real_t* rhobar;        //!< per atom storage for rhobar
    real_t* dfEmbed;       //!< per atom storage for derivative of Embedding
@@ -164,6 +181,11 @@ typedef struct SimGpuSt {
   // potentials
   LjPotentialGpu lj_pot;
   EamPotentialGpu eam_pot;
+
+  int * pairlist;
+
+  int genPairlist;
+  int usePairlist;
 
 } SimGpu;
 

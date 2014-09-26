@@ -226,15 +226,28 @@ SimFlat* initSimulation(Command cmd)
    sim->domain = initDecomposition(
       cmd.xproc, cmd.yproc, cmd.zproc, globalExtent);
 
+   sim->usePairlist = cmd.usePairlist;
+   if(sim->usePairlist)
+   {
+       sim->gpu.atoms.neighborList.forceRebuildFlag = 1;
+   }
+   sim->gpu.usePairlist = sim->usePairlist;
+
    real_t skinDistance;
-   if(useNL){
+   if(useNL || sim->usePairlist){
           skinDistance = sim->pot->cutoff * cmd.relativeSkinDistance; 
           if (printRank())
                   printf("Skin-Distance: %f\n",skinDistance);
    } else
           skinDistance = 0.0;
+   sim->skinDistance = skinDistance;
+   if(sim->usePairlist)
+       sim->gpu.atoms.neighborList.skinDistanceHalf2 = skinDistance*skinDistance/4;
    sim->boxes = initLinkCells(sim->domain, sim->pot->cutoff + skinDistance, cmd.doHilbert);
    sim->atoms = initAtoms(sim->boxes, skinDistance);
+
+   sim->ljInterpolation = cmd.ljInterpolation;
+   sim->spline = cmd.spline;
 
    // create lattice with desired temperature and displacement.
    createFccLattice(cmd.nx, cmd.ny, cmd.nz, latticeConstant, sim);

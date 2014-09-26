@@ -216,17 +216,30 @@ void AllocateGpu(SimFlat *sim, int do_eam, real_t skinDistance)
   int nMaxHaloParticles = (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes)*MAXATOMS;
   initHashTableGpu(&(gpu->d_hashTable), 2*nMaxHaloParticles);
 
+  //Allocate pairlist
+  if(sim->usePairlist)
+  { 
+      cudaMalloc((void**)&gpu->pairlist,nLocalBoxes * MAXATOMS/WARP_SIZE*N_MAX_NEIGHBORS * (MAXATOMS + PAIRLIST_ATOMS_PER_INT-1)/PAIRLIST_ATOMS_PER_INT * sizeof(int));
+  }
   // init EAM arrays
   if (do_eam)  
   {
     EamPotential* pot = (EamPotential*) sim->pot;
-
-    CUDA_CHECK(cudaMalloc((void**)&gpu->eam_pot.f.values, (pot->f->n+3) * sizeof(real_t)));
-    CUDA_CHECK(cudaMalloc((void**)&gpu->eam_pot.rho.values, (pot->rho->n+3) * sizeof(real_t)));
-    CUDA_CHECK(cudaMalloc((void**)&gpu->eam_pot.phi.values, (pot->phi->n+3) * sizeof(real_t)));
-
-    CUDA_CHECK(cudaMalloc((void**)&gpu->eam_pot.dfEmbed, r_size));
-    CUDA_CHECK(cudaMalloc((void**)&gpu->eam_pot.rhobar, r_size));
+    
+    cudaMalloc((void**)&gpu->eam_pot.f.values, (pot->f->n+3) * sizeof(real_t));
+    if(!sim->spline)
+    {
+        cudaMalloc((void**)&gpu->eam_pot.rho.values, (pot->rho->n+3) * sizeof(real_t));
+        cudaMalloc((void**)&gpu->eam_pot.phi.values, (pot->phi->n+3) * sizeof(real_t));
+    }
+    else
+    {
+        cudaMalloc((void**)&gpu->eam_pot.fS.coefficients, (4*pot->f->n) * sizeof(real_t));
+        cudaMalloc((void**)&gpu->eam_pot.rhoS.coefficients, (4*pot->rho->n) * sizeof(real_t));
+        cudaMalloc((void**)&gpu->eam_pot.phiS.coefficients, (4*pot->phi->n) * sizeof(real_t));
+    }
+    cudaMalloc((void**)&gpu->eam_pot.dfEmbed, r_size);
+    cudaMalloc((void**)&gpu->eam_pot.rhobar, r_size);
   }
   else //init LJ iterpolation table
   {
@@ -306,9 +319,12 @@ void DestroyGpu(SimFlat *flat)
   if (gpu->eam_pot.rho.values) CUDA_CHECK(cudaFree(gpu->eam_pot.rho.values));
   if (gpu->eam_pot.phi.values) CUDA_CHECK(cudaFree(gpu->eam_pot.phi.values));
 
-  if (gpu->eam_pot.dfEmbed) CUDA_CHECK(cudaFree(gpu->eam_pot.dfEmbed));
-  if (gpu->eam_pot.rhobar) CUDA_CHECK(cudaFree(gpu->eam_pot.rhobar));
+  if (gpu->eam_pot.fS.coefficients) cudaFree(gpu->eam_pot.fS.coefficients);
+  if (gpu->eam_pot.rhoS.coefficients) cudaFree(gpu->eam_pot.rhoS.coefficients);
+  if (gpu->eam_pot.phiS.coefficients) cudaFree(gpu->eam_pot.phiS.coefficients);
 
+  if (gpu->eam_pot.dfEmbed) cudaFree(gpu->eam_pot.dfEmbed);
+  if (gpu->eam_pot.rhobar) cudaFree(gpu->eam_pot.rhobar);
 
   free(host->species_mass);
 
@@ -339,12 +355,68 @@ void initLJinterpolation(LjPotentialGpu * pot)
    {        
        real_t x = pot->lj_interpolation.x0 + (i-1)/pot->lj_interpolation.invDx;
        real_t r2 = 1.0/(x*x);
-       real_t r6 = r2*r2*r2;
+       real_t r6 = s6 * r2*r2*r2;
        temp[i] = 4 * epsilon * (r6 * (r6 - 1.0) - eShift);
   }
   CUDA_CHECK(cudaMemcpy(pot->lj_interpolation.values, temp, (pot->lj_interpolation.n+3)*sizeof(real_t), cudaMemcpyHostToDevice));
 
   free(temp);
+}
+
+//Algorithm for computing spline coefficients from Numerical Recipes in C, chapter 3.3
+void initSplineCoefficients(real_t * gpu_coefficients, int n, real_t * values, real_t x0, real_t invDx)
+{
+    real_t *u = (real_t*) malloc(n * sizeof(real_t));
+    real_t *y2 = (real_t*) malloc((n+1)*sizeof(real_t));
+
+    //Second derivative is 0 at the beginning of the interval
+    y2[0] = 0;
+    u[0] = 0;
+
+    for(int i = 1; i < n; ++i)
+    {
+        real_t xi = (x0 + i/invDx)*(x0+i/invDx);
+        real_t xp = (x0 + (i-1)/invDx)*(x0 + (i-1)/invDx);
+        real_t xn = (x0 + (i+1)/invDx)*(x0 + (i+1)/invDx);
+
+        real_t sig = (xi - xp)/(xn-xp);
+        real_t p = sig*y2[i-1]+2.0;
+        y2[i] = (sig-1.0)/p;
+        u[i] = (values[i+1]-values[i])/(xn-xi) - (values[i]-values[i-1])/(xi-xp);
+        u[i] = (6.0 * u[i]/(xn-xp)-sig*u[i-1])/p;
+    }
+
+    real_t xn = (x0 + n/invDx)*(x0 + n/invDx);
+    real_t xnp = (x0 + (n-1)/invDx)*(x0 + (n-1)/invDx);
+    //First derivative is 0 at the end of the interval
+    real_t qn = 0.5;
+    real_t un = (-3.0/(xn-xnp))*(values[n]-values[n-1])/(xn-xnp);
+    y2[n] = (un-qn*u[n-1])/(qn*y2[n-1]+1.0);
+
+    for(int i = n-1; i >= 0; --i)
+    {
+        y2[i] = y2[i]*y2[i+1] + u[i];
+    }
+    real_t * coefficients = (real_t *) malloc(4*n* sizeof(real_t));
+    for(int i = 0; i < n; i++)
+    {
+        real_t x1 = (x0 + i/invDx)*(x0+i/invDx);
+        real_t x2 = (x0 + (i+1)/invDx)*(x0+(i+1)/invDx);
+        real_t d2y1 = y2[i];
+        real_t d2y2 = y2[i+1];
+        real_t y1 = values[i];
+        real_t y2 = values[i+1];
+        
+        coefficients[i*4] = 1.0/(6.0*(x2-x1))*(d2y2-d2y1);
+        coefficients[i*4+1] = 1.0/(2.0*(x2-x1))*(x2*d2y1-x1*d2y2);
+        coefficients[i*4+2] = 1.0/(x2-x1) * (1.0/6.0*(-3*x2*x2+(x2-x1)*(x2-x1))*d2y1+1.0/6.0*(3*x1*x1-(x2-x1)*(x2-x1))*d2y2-y1+y2);
+        coefficients[i*4+3] = 1/(x2-x1)*(x2*y1-x1*y2+1.0/6.0*d2y1*(x2*x2*x2-x2*(x2-x1)*(x2-x1)) + 1.0/6.0*d2y2*(-x1*x1*x1+x1*(x2-x1)*(x2-x1)));
+    }
+    cudaMemcpy(gpu_coefficients, coefficients, 4 * n * sizeof(real_t), cudaMemcpyHostToDevice);
+
+    free(y2);
+    free(u);
+    free(coefficients);
 }
 
 void CopyDataToGpu(SimFlat *sim, int do_eam)
@@ -355,44 +427,77 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
   // set potential
   if (do_eam) 
   {
-    EamPotential* pot = (EamPotential*) sim->pot;
-    gpu->eam_pot.cutoff = pot->cutoff;
+      EamPotential* pot = (EamPotential*) sim->pot;
+      gpu->eam_pot.cutoff = pot->cutoff;
+      
+      //f is needed for second phase of EAM, not yet changed to spline 
+      gpu->eam_pot.f.n = pot->f->n;
+      gpu->eam_pot.f.x0 = pot->f->x0;
+      gpu->eam_pot.f.xn = pot->f->x0 + pot->f->n / pot->f->invDx;
+      gpu->eam_pot.f.invDx = pot->f->invDx;
+      gpu->eam_pot.f.invDxHalf = pot->f->invDx * 0.5;
+      gpu->eam_pot.f.invDxXx0 = pot->f->invDxXx0;
+      cudaMemcpy(gpu->eam_pot.f.values, pot->f->values-1, (pot->f->n+3) * sizeof(real_t), cudaMemcpyHostToDevice);
 
-    gpu->eam_pot.f.n = pot->f->n;
-    gpu->eam_pot.rho.n = pot->rho->n;
-    gpu->eam_pot.phi.n = pot->phi->n;
+      if(!sim->spline)
+      {
+        gpu->eam_pot.rho.n = pot->rho->n;
+        gpu->eam_pot.phi.n = pot->phi->n;
 
-    gpu->eam_pot.f.x0 = pot->f->x0;
-    gpu->eam_pot.rho.x0 = pot->rho->x0;
-    gpu->eam_pot.phi.x0 = pot->phi->x0;
+        gpu->eam_pot.rho.x0 = pot->rho->x0;
+        gpu->eam_pot.phi.x0 = pot->phi->x0;
 
-    gpu->eam_pot.f.xn = pot->f->x0 + pot->f->n / pot->f->invDx;
-    gpu->eam_pot.rho.xn = pot->rho->x0 + pot->rho->n / pot->rho->invDx;
-    gpu->eam_pot.phi.xn = pot->phi->x0 + pot->phi->n / pot->phi->invDx;
-    
-    gpu->eam_pot.f.invDx = pot->f->invDx;
-    gpu->eam_pot.rho.invDx = pot->rho->invDx;
-    gpu->eam_pot.phi.invDx = pot->phi->invDx;
+        gpu->eam_pot.rho.xn = pot->rho->x0 + pot->rho->n / pot->rho->invDx;
+        gpu->eam_pot.phi.xn = pot->phi->x0 + pot->phi->n / pot->phi->invDx;
 
-    gpu->eam_pot.f.invDxHalf = pot->f->invDx * 0.5;
-    gpu->eam_pot.rho.invDxHalf = pot->rho->invDx * 0.5;
-    gpu->eam_pot.phi.invDxHalf = pot->phi->invDx * 0.5;
+        gpu->eam_pot.rho.invDx = pot->rho->invDx;
+        gpu->eam_pot.phi.invDx = pot->phi->invDx;
 
-    gpu->eam_pot.f.invDxXx0 = pot->f->invDxXx0;
-    gpu->eam_pot.rho.invDxXx0 = pot->rho->invDxXx0;
-    gpu->eam_pot.phi.invDxXx0 = pot->phi->invDxXx0;
+        gpu->eam_pot.rho.invDxHalf = pot->rho->invDx * 0.5;
+        gpu->eam_pot.phi.invDxHalf = pot->phi->invDx * 0.5;
+
+        gpu->eam_pot.rho.invDxXx0 = pot->rho->invDxXx0;
+        gpu->eam_pot.phi.invDxXx0 = pot->phi->invDxXx0;
 
     CUDA_CHECK(cudaMemcpy(gpu->eam_pot.f.values, pot->f->values-1, (pot->f->n+3) * sizeof(real_t), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(gpu->eam_pot.rho.values, pot->rho->values-1, (pot->rho->n+3) * sizeof(real_t), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(gpu->eam_pot.phi.values, pot->phi->values-1, (pot->phi->n+3) * sizeof(real_t), cudaMemcpyHostToDevice));
+        cudaMemcpy(gpu->eam_pot.rho.values, pot->rho->values-1, (pot->rho->n+3) * sizeof(real_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(gpu->eam_pot.phi.values, pot->phi->values-1, (pot->phi->n+3) * sizeof(real_t), cudaMemcpyHostToDevice);
+    }
+    else
+    {
+        gpu->eam_pot.fS.n = pot->f->n;
+        gpu->eam_pot.rhoS.n = pot->rho->n;
+        gpu->eam_pot.phiS.n = pot->phi->n;
+
+        gpu->eam_pot.fS.x0 = pot->f->x0;
+        gpu->eam_pot.rhoS.x0 = pot->rho->x0;
+        gpu->eam_pot.phiS.x0 = pot->phi->x0;
+
+        gpu->eam_pot.fS.xn = pot->f->x0 + pot->f->n / pot->f->invDx;
+        gpu->eam_pot.rhoS.xn = pot->rho->x0 + pot->rho->n / pot->rho->invDx;
+        gpu->eam_pot.phiS.xn = pot->phi->x0 + pot->phi->n / pot->phi->invDx;
+
+        gpu->eam_pot.fS.invDx = pot->f->invDx;
+        gpu->eam_pot.rhoS.invDx = pot->rho->invDx;
+        gpu->eam_pot.phiS.invDx = pot->phi->invDx;
+
+        gpu->eam_pot.fS.invDxXx0 = pot->f->invDxXx0;
+        gpu->eam_pot.rhoS.invDxXx0 = pot->rho->invDxXx0;
+        gpu->eam_pot.phiS.invDxXx0 = pot->phi->invDxXx0;
+
+        initSplineCoefficients(gpu->eam_pot.fS.coefficients, pot->f->n, pot->f->values, pot->f->x0, pot->f->invDx);
+        initSplineCoefficients(gpu->eam_pot.rhoS.coefficients, pot->rho->n, pot->rho->values, pot->rho->x0, pot->rho->invDx);
+        initSplineCoefficients(gpu->eam_pot.phiS.coefficients, pot->phi->n, pot->phi->values, pot->phi->x0, pot->phi->invDx);
+    }
   }
   else
   {
-    LjPotential* pot = (LjPotential*)sim->pot;
-    gpu->lj_pot.sigma = pot->sigma;
-    gpu->lj_pot.cutoff = pot->cutoff;
-    gpu->lj_pot.epsilon = pot->epsilon;
-    initLJinterpolation(&(gpu->lj_pot));
+      LjPotential* pot = (LjPotential*)sim->pot;
+      gpu->lj_pot.sigma = pot->sigma;
+      gpu->lj_pot.cutoff = pot->cutoff;
+      gpu->lj_pot.epsilon = pot->epsilon;
+      if(sim->ljInterpolation)
+          initLJinterpolation(&(gpu->lj_pot));
   }
 
   int total_boxes = sim->boxes->nTotalBoxes;

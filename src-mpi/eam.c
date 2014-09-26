@@ -204,15 +204,15 @@ int eamForceGpu(SimFlat* s)
        updateNeighborsGpuAsync(s->gpu, s->flags, s->n_boundary_cells, s->boundary_cells, s->boundary_stream);
 
      // interior stream already launched
-     eamForce1GpuAsync(s->gpu, s->gpu.b_list, s->n_boundary_cells, s->boundary_cells, s->method, s->boundary_stream);
-     eamForce2GpuAsync(s->gpu, s->gpu.b_list, s->n_boundary_cells, s->boundary_cells, s->method, s->boundary_stream);
+     eamForce1GpuAsync(s->gpu, s->gpu.b_list, s->n_boundary_cells, s->boundary_cells, s->method, s->boundary_stream, s->spline);
+     eamForce2GpuAsync(s->gpu, s->gpu.b_list, s->n_boundary_cells, s->boundary_cells, s->method, s->boundary_stream, s->spline);
 
      // we need boundary data before halo exchange
      cudaStreamSynchronize(s->boundary_stream);
 
      // now we can start step 3 on the interior
      int n_interior_cells = s->gpu.boxes.nLocalBoxes - s->n_boundary_cells;
-     eamForce3GpuAsync(s->gpu, s->gpu.i_list, n_interior_cells, s->interior_cells, s->method, s->interior_stream);
+     eamForce3GpuAsync(s->gpu, s->gpu.i_list, n_interior_cells, s->interior_cells, s->method, s->interior_stream, s->spline);
    }
    else {
      // only update neighbors list when method != 0
@@ -229,10 +229,10 @@ int eamForceGpu(SimFlat* s)
 //     cudaStreamSynchronize(s->boundary_stream);
 
 
-     eamForce1Gpu(s->gpu,s->method);
+     eamForce1Gpu(s->gpu,s->method, s->spline);
 
      if (!s->gpuProfile)
-       eamForce2Gpu(s->gpu,s->method);
+       eamForce2Gpu(s->gpu,s->method, s->spline);
    }
  
    if (!s->gpuProfile) {
@@ -252,11 +252,11 @@ int eamForceGpu(SimFlat* s)
  
      if (s->gpuAsync) {
        // interior stream already launched
-       eamForce3GpuAsync(s->gpu, s->gpu.b_list, s->n_boundary_cells, s->boundary_cells, s->method, s->boundary_stream);
+       eamForce3GpuAsync(s->gpu, s->gpu.b_list, s->n_boundary_cells, s->boundary_cells, s->method, s->boundary_stream, s->spline);
        cudaDeviceSynchronize();
      }
      else {
-       eamForce3Gpu(s->gpu,s->method);
+       eamForce3Gpu(s->gpu,s->method, s->spline);
      }
    }
 

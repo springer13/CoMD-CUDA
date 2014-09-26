@@ -199,7 +199,7 @@ void emptyNeighborList(NeighborList* neighborList)
 
 int neighborListUpdateRequired(SimFlat* sim)
 {
-   if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL)
+   if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL || sim->usePairlist)
      return neighborListUpdateRequiredGpu(&(sim->gpu));
    else if(sim->method == CPU_NL)
      return neighborListUpdateRequiredCpu(sim->atoms->neighborList,sim->boxes,sim->atoms);

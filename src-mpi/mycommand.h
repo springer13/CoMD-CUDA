@@ -31,9 +31,14 @@ typedef struct CommandSt
    double initialSkinDistance; //!< initial skinDistance in percent
    char method[1024]; //!< method to use on gpu: thread/atom, warp/atom or others
    int doHilbert;          //!< a flag to determine whether we're using a space-filling curve for the traversal of the cells 
- 
+
    int gpuAsync;	//!< communication latency hiding optimization using streams
    int gpuProfile;	//!< skip redistribute routines and run only one step of compute forces
+
+   int ljInterpolation; //!< compute Lennard-Jones potential using interpolation
+   int spline;
+
+   int usePairlist;
 } Command;
 
 /// Process command line arguments into an easy to handle structure.

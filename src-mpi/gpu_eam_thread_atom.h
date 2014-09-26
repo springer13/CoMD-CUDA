@@ -29,7 +29,7 @@
 #include <assert.h>
 
 // templated for the 1st and 3rd EAM passes
-template<int step>
+template<int step, bool spline>
 __global__
 __launch_bounds__(THREAD_ATOM_CTA, THREAD_ATOM_ACTIVE_CTAS)
 void EAM_Force_thread_atom(SimGpu sim, AtomListGpu list)
@@ -83,25 +83,42 @@ void EAM_Force_thread_atom(SimGpu sim, AtomListGpu list)
       // no divide by zero
       if (r2 <= rCut2 && r2 > 0.0) 
       {
-        real_t r = sqrt(r2);
 
         real_t phiTmp, dPhi, rhoTmp, dRho;
-	if (step == 1) {
-          interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
-          interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+        if(!spline)
+        {
+            real_t r = sqrt(r2);
+
+            if (step == 1) {
+                interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
+                interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+            }
+            else {
+                // step = 3
+                interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+                dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+            }
+
+            dPhi /= r;
         }
-        else {
-	  // step = 3
-	  interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-	  dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
-	}
+        else
+        {
+            if(step == 1) {
+                interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
+                interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+            }
+            else
+            {
+                //step 3
+                interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+                dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+            }
 
-        dPhi /= r;
-
+        }
         // update forces
         ifx -= dPhi * dx;
         ify -= dPhi * dy;
-	ifz -= dPhi * dz;
+        ifz -= dPhi * dz;
 
         // update energy & accumulate rhobar
         if (step == 1) {
@@ -124,7 +141,7 @@ void EAM_Force_thread_atom(SimGpu sim, AtomListGpu list)
 
 
 /// templated for the 1st and 3rd EAM passes using the neighborlist
-template<int step>
+template<int step, bool spline>
 __global__
 __launch_bounds__(THREAD_ATOM_CTA, THREAD_ATOM_ACTIVE_CTAS)
 void EAM_Force_thread_atom_NL(SimGpu sim, AtomListGpu list)
@@ -189,27 +206,43 @@ void EAM_Force_thread_atom_NL(SimGpu sim, AtomListGpu list)
       // no divide by zero
       if (r2 <= rCut2 && r2 > 0.0) 
       {
-        real_t r = sqrt(r2);
+          real_t phiTmp, dPhi, rhoTmp, dRho;
+          if(!spline)
+          {
+              real_t r = sqrt(r2);
 
-        real_t phiTmp, dPhi, rhoTmp, dRho;
-	     if (step == 1) {
-          interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
-          interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-        }
-        else {
-	        // step = 3
-	        interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
-	        dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
-	     }
+              if (step == 1) {
+                  interpolate(sim.eam_pot.phi, r, phiTmp, dPhi);
+                  interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+              }
+              else {
+                  // step = 3
+                  interpolate(sim.eam_pot.rho, r, rhoTmp, dRho);
+                  dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+              }
 
-        dPhi /= r;
+              dPhi /= r;
+          }
+          else
+          {
+              if(step == 1) {
+                  interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
+                  interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+              }
+              else
+              {
+                  //step 3
+                  interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+                  dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+              }
 
-        // update forces
-        ifx -= dPhi * dx;
-        ify -= dPhi * dy;
-	     ifz -= dPhi * dz;
+          }
+          // update forces
+          ifx -= dPhi * dx;
+          ify -= dPhi * dy;
+          ifz -= dPhi * dz;
 
-        // update energy & accumulate rhobar
+          // update energy & accumulate rhobar
         if (step == 1) {
           ie += phiTmp;
           irho += rhoTmp;
@@ -228,9 +261,8 @@ void EAM_Force_thread_atom_NL(SimGpu sim, AtomListGpu list)
 }
 
 // compute embedding energy
-template <>
 __global__ 
-void EAM_Force_thread_atom<2>(SimGpu sim, AtomListGpu list)
+void EAM_Force_thread_atom2(SimGpu sim, AtomListGpu list)
 {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= list.n) return;
