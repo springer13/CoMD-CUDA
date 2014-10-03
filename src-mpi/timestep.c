@@ -316,6 +316,7 @@ void redistributeAtomsGpuNL(SimFlat* sim)
 
            emptyHaloCellsGpu(sim);
            emptyHashTableGpu(&(sim->gpu.d_hashTable));
+           updateLinkCellsGpu(sim);		// this is fixes issues with neighbor-lists rebuilding for multiple processes
 
            sim->gpu.d_hashTable.nEntriesGet = 0; //REFACTORING TODO move into haloexchange()? (this has to be set everytime we call haloExchange && method == 3)
 
@@ -360,6 +361,7 @@ void redistributeAtomsCpuNL(SimFlat* sim)
 
            atomsUpdateLocalId(sim->boxes, sim->atoms);
            emptyHaloCells(sim->boxes);
+           updateLinkCellsCpu(sim->boxes, sim->atoms);		// this is fixes issues with neighbor-lists rebuilding for multiple processes
 
            //if nlUpdateRequired is set, we will rebuild the hashtable during this call to haloExchange
            //Hence, we have to clear it first.

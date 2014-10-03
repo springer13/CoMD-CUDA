@@ -1257,12 +1257,15 @@ void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag)
            real_t rCut2 = (rCut+sim->atoms.neighborList.skinDistance)*(rCut+sim->atoms.neighborList.skinDistance);
            if(method == THREAD_ATOM_NL)
            {
-           if(boundaryFlag == BOUNDARY)
-               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, BOUNDARY><<<grid, block>>>(*sim);
-           else if (boundaryFlag == INTERIOR)
-               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, INTERIOR><<<grid, block>>>(*sim);
-           else
-               buildNeighborListKernel<MAXNEIGHBORLISTSIZE, packSize, logPackSize, BOTH><<<grid, block>>>(*sim);
+	       // TODO: something is broken here, reports invalid access for long runs, NEED TO FIX
+	       // the original buildNeighborListKernel reports invalid access in debug mode
+               if(boundaryFlag == BOUNDARY)
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, 1, BOUNDARY><<<grid, block>>>(*sim, rCut2);
+               else if (boundaryFlag == INTERIOR)
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, 1, INTERIOR><<<grid, block>>>(*sim, rCut2);
+               else {
+                   buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, 1, BOTH><<<grid, block>>>(*sim, rCut2);
+               }
            }
            else if(method == WARP_ATOM_NL)
            {
@@ -1272,7 +1275,6 @@ void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag)
                    buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, INTERIOR><<<grid, block>>>(*sim, rCut2);
                else
                    buildNeighborListKernel_warp<MAXNEIGHBORLISTSIZE, packSize, logPackSize, memoryPackSize, BOTH><<<grid, block>>>(*sim, rCut2);
-
            }
 
            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1); 
