@@ -484,6 +484,7 @@ void computeOffsets(int nlUpdateRequired, SimFlat* sim,
      computeOffsetsNoUpdateReq<<<grid, block, 0, stream>>>(d_iOffset, nBuf, sim->gpu.boxes.nAtoms, sim->gpu.d_hashTable);
      sim->gpu.d_hashTable.nEntriesGet += nBuf;
   }
+  CUDA_GET_LAST_ERROR
 }
 
 __global__ void UnloadAtomsBufferPacked(vec_t r, vec_t p, int* type, int* gid, int nBuf, AtomsGpu atoms, int* iOffsets)

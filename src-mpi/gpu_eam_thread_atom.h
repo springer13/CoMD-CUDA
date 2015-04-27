@@ -164,6 +164,8 @@ void EAM_Force_thread_atom_NL(SimGpu sim, AtomListGpu list)
   real_t ie = 0;
   real_t irho = 0;
 
+  assert(iOff < sim.boxes.nLocalBoxes * MAXATOMS && iOff >=0 );
+
   if (step == 3) {
     ifx = sim.atoms.f.x[iOff];
     ify = sim.atoms.f.y[iOff];
@@ -188,7 +190,10 @@ void EAM_Force_thread_atom_NL(SimGpu sim, AtomListGpu list)
   // loop over my neighboring particles within the neighbor-list
   for (int j = 0; j < nNeighbors; j++) 
   { 
-      int jOff = neighborList[j * ldNeighborList + iLid ];
+      const int jLid = j * ldNeighborList + iLid;
+      assert(jLid < ldNeighborList * sim.atoms.neighborList.nMaxNeighbors  );
+      const int jOff = neighborList[jLid];
+      assert(jOff < sim.boxes.nTotalBoxes * MAXATOMS  && jOff >=0 );
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350
       real_t dx = irx - __ldg(&rx[jOff]);

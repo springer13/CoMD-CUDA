@@ -74,4 +74,24 @@ int compactHaloCells(SimFlat* sim, char* h_compactAtoms, int* h_cellOffset);
   }                                                                                                             \
 }
 
+#ifdef DEBUG
+#define CUDA_GET_LAST_ERROR \
+{														\
+  cudaDeviceSynchronize(); \
+  cudaError_t status = (cudaGetLastError());                                                                      		\
+  if (status != cudaSuccess) {                                                                                  \
+    fprintf(stderr, "Error in file %s at line %d\n", __FILE__, __LINE__);                                  	\
+    fprintf(stderr, "CUDA error %d: %s", status, cudaGetErrorString(status));                              	\
+    fprintf(stderr, "\n");                                                                                 	\
+    exit(-1);                                                                                              	\
+  }                                                                                                             \
+}
+#else
+#define CUDA_GET_LAST_ERROR 
+#endif
+
+
+
+
+
 #endif
