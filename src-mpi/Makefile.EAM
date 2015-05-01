@@ -31,7 +31,7 @@ C_LIB = -lm
 ### If you need to specify include paths, library paths, or link flags
 ### for MPI, put them here.  Put both -L and -l switches into MPI_LIB.
 MPI_LIB =
-MPI_INCLUDE =
+MPI_INCLUDE = #use those includes shown by 'mpicc --show'
 
 ### A place to specify any other include or library switches your
 ### platform requires.
@@ -51,9 +51,9 @@ NVCC = $(CUDA_HOME)/bin/nvcc
 
 # add precision flag for CUDA targets
 ifeq ($(DOUBLE_PRECISION), ON)
-NVCC_FLAGS += -DDOUBLE
+NVCC_FLAGS += -DCOMD_DOUBLE
 else
-NVCC_FLAGS += -DSINGLE
+NVCC_FLAGS += -DCOMD_SINGLE
 endif
 
 ifeq ($(DEBUG), ON)
@@ -81,9 +81,9 @@ BIN_DIR=../bin
 
 # Check for double precision
 ifeq ($(DOUBLE_PRECISION), ON)
-CFLAGS += -DDOUBLE
+CFLAGS += -DCOMD_DOUBLE
 else
-CFLAGS += -DSINGLE
+CFLAGS += -DCOMD_SINGLE
 endif
 
 # Set executable name and add includes & libraries for MPI if needed.
@@ -93,6 +93,7 @@ CoMD_VARIANT = CoMD-cuda-mpi
 INCLUDES += ${MPI_INCLUDE}
 CFLAGS += -DDO_MPI
 LDFLAGS += ${MPI_LIB}
+NVCC_FLAGS += ${MPI_INCLUDE} -DDO_MPI
 endif
 CoMD_EXE = ${BIN_DIR}/${CoMD_VARIANT}
 

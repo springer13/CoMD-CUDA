@@ -20,7 +20,7 @@ static int myRank = 0;
 static int nRanks = 1;
 
 #ifdef DO_MPI
-#ifdef SINGLE
+#ifdef COMD_SINGLE
 #define REAL_MPI_TYPE MPI_FLOAT
 #else
 #define REAL_MPI_TYPE MPI_DOUBLE

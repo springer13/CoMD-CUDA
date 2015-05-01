@@ -16,6 +16,7 @@
 #include "gpu_neighborList.h"
 
 #include <stdio.h>
+#include <assert.h>
 
 
 static   void advanceVelocityCpu(SimFlat* sim, int nBoxes, real_t dt);
@@ -302,6 +303,28 @@ void redistributeAtomsGpuNL(SimFlat* sim)
    haloExchange(sim->atomExchange, sim);
    stopTimer(atomHaloTimer);
 
+#ifdef DEBUG
+   //count the number of interior particles on each process and sum them up
+   int *nAtomsGPU  = (int*) malloc(sizeof(int) * sim->boxes->nTotalBoxes);
+   cudaCopyDtH(nAtomsGPU, sim->gpu.boxes.nAtoms, sim->boxes->nTotalBoxes * sizeof(int));
+   int sum = 0;
+   int sumInt = 0;
+   for(int i=0;i < sim->boxes->nTotalBoxes; ++i){
+      sum+= nAtomsGPU[i];
+      if(i < sim->boxes->nLocalBoxes)
+         sumInt+= nAtomsGPU[i];
+   }
+   int tmpNumGlobal;
+   MPI_Allreduce(&sumInt, &tmpNumGlobal, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+   if( tmpNumGlobal != sim->atoms->nGlobal)
+   {
+      printf("ERROR: total number of particles has changed: %d -> %d\n", sim->atoms->nGlobal, tmpNumGlobal );
+      printf("Interior: %d, Total: %d\n",sumInt, sum);
+      MPI_Finalize();
+      exit(-1);
+   }
+   free(nAtomsGPU);
+#endif
    int haloExchangeRequired=0;
    cudaMemcpy(&haloExchangeRequired, sim->gpu.d_updateLinkCellsRequired,sizeof(int), cudaMemcpyDeviceToHost); //TODO Async? boundary_stream
    int flag = 0; //indicates if any particle has migrated from one processor to the other 

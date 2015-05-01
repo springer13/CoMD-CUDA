@@ -46,6 +46,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef DO_MPI
+#include <mpi.h>
+#endif
+
 struct LinkCellsGpuSt;
 
 void SetupGpu(int deviceId);
@@ -60,11 +64,13 @@ void updateGpuHalo(SimFlat *sim);
 void updateNAtomsCpu(SimFlat* sim);
 void updateNAtomsGpu(SimFlat* sim);
 void emptyHaloCellsGpu(SimFlat* sim);
+void cudaCopyDtH(void* dst, const void* src, int size);
 
 int compactHaloCells(SimFlat* sim, char* h_compactAtoms, int* h_cellOffset);
 
 #define CUDA_CHECK(command)											\
 {														\
+  cudaDeviceSynchronize(); \
   cudaError_t status = (command);                                                                      		\
   if (status != cudaSuccess) {                                                                                  \
     fprintf(stderr, "Error in file %s at line %d\n", __FILE__, __LINE__);                                  	\
@@ -75,6 +81,21 @@ int compactHaloCells(SimFlat* sim, char* h_compactAtoms, int* h_cellOffset);
 }
 
 #ifdef DEBUG
+#ifdef DO_MPI
+#define CUDA_GET_LAST_ERROR \
+{														\
+  cudaDeviceSynchronize(); \
+  int rank; \
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank); \
+  cudaError_t status = (cudaGetLastError());                                                                      		\
+  if (status != cudaSuccess) {                                                                                  \
+    fprintf(stderr, "rank %d: Error in file %s at line %d\n", rank, __FILE__, __LINE__);                                  	\
+    fprintf(stderr, "CUDA error %d: %s", status, cudaGetErrorString(status));                              	\
+    fprintf(stderr, "\n");                                                                                 	\
+    exit(-1);                                                                                              	\
+  } \
+}
+#else
 #define CUDA_GET_LAST_ERROR \
 {														\
   cudaDeviceSynchronize(); \
@@ -86,6 +107,8 @@ int compactHaloCells(SimFlat* sim, char* h_compactAtoms, int* h_cellOffset);
     exit(-1);                                                                                              	\
   }                                                                                                             \
 }
+#endif
+
 #else
 #define CUDA_GET_LAST_ERROR 
 #endif

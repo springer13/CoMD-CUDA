@@ -29,7 +29,7 @@
 #ifndef __GPU_SCAN_H_
 #define __GPU_SCAN_H_
 
-#if 0
+#if 1
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 
@@ -40,7 +40,7 @@ void scan(int *data, int n, int *partial_sums, cudaStream_t stream = NULL)
 }
 #endif
 
-#if 1
+#if 0
 
 // Shuffle intrinsics SDK sample
 // This sample demonstrates the use of the shuffle intrinsic
@@ -186,9 +186,12 @@ void scan(int *data, int n, int *d_partial_sums, cudaStream_t stream = NULL)
     cudaMemsetAsync(d_partial_sums, 0, partial_sz, stream);
 
     shfl_scan_test<<<gridSize,blockSize, shmem_sz, stream>>>(data, 32, d_partial_sums);
+    CUDA_GET_LAST_ERROR
     shfl_scan_test<<<p_gridSize,p_blockSize, shmem_sz, stream>>>(d_partial_sums, 32);
+    CUDA_GET_LAST_ERROR
     if (gridSize > 1) 
       uniform_add<<<gridSize-1, blockSize, 0, stream>>>(data+blockSize, d_partial_sums, n);
+    CUDA_GET_LAST_ERROR
 }
 
 #endif

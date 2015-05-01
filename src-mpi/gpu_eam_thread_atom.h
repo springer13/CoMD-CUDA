@@ -274,7 +274,9 @@ void EAM_Force_thread_atom2(SimGpu sim, AtomListGpu list)
 
   // compute box ID and local atom ID
   int iAtom = list.atoms[tid];
+  assert(iAtom < MAXATOMS);
   int iBox = list.cells[tid];
+  assert(iBox < sim.boxes.nLocalBoxes);
 
   int iOff = iBox * MAXATOMS + iAtom;
 
