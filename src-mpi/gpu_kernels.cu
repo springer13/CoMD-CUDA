@@ -28,7 +28,6 @@
 
 #include <stdio.h>
 #include <assert.h>
-#include <mpi.h>
 
 #include "CoMDTypes.h"
 #include "haloExchange.h"
@@ -58,6 +57,10 @@
 #define EXTERN_C extern "C"
 #include "gpu_kernels.h"
 #undef EXTERN_C
+extern "C"
+{
+#include "parallel.h"
+}
 
 extern "C"
 void ljForceGpu(SimGpu * sim, int interpolation, int num_cells, int * cells_list, real_t plcutoff, int method)
@@ -817,12 +820,7 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
                 //TODO this function needs to be called for multi-node correctness. However, there are (most likely) other things that case bugs with the 
                 //multi-node version but this is one thing that definitely needs to be done. It just assure that if one node has to rebuild its NL, then
                 //all nodes have to do so.
-//                addIntParallel(&h_updateNeighborListRequired, &tmpUpdateNeighborListRequired, 1); 
-#ifdef DO_MPI
-                MPI_Allreduce(&h_updateNeighborListRequired, &tmpUpdateNeighborListRequired, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-#else
-                h_updateNeighborListRequired = tmpUpdateNeighborListRequired;
-#endif
+                addIntParallel(&h_updateNeighborListRequired, &tmpUpdateNeighborListRequired, 1); 
                         
                 if(tmpUpdateNeighborListRequired > 0)
                         sim->atoms.neighborList.updateNeighborListRequired = 1; 
