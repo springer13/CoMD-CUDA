@@ -29,7 +29,7 @@
 #ifndef __GPU_SCAN_H_
 #define __GPU_SCAN_H_
 
-#if 1
+#if 0
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 
@@ -38,9 +38,8 @@ void scan(int *data, int n, int *partial_sums, cudaStream_t stream = NULL)
   thrust::device_ptr<int> vec(data);
   thrust::exclusive_scan(vec, vec + n, vec);
 }
-#endif
 
-#if 0
+#else
 
 // Shuffle intrinsics SDK sample
 // This sample demonstrates the use of the shuffle intrinsic

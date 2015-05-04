@@ -15,7 +15,9 @@ DO_MPI = ON
 # Maximum number of atoms that can be stored in a link cell
 MAXATOMS = 64
 
-DEBUG=OFF
+# This enables assertions within device kernels as well as sanity-checks
+# scattered within the C code. (ON/OFF)
+DEBUG = OFF
 
 ### Set your desired C compiler and any necessary flags.  Note that CoMD
 ### uses some c99 features.  You can also set flags for optimization and
@@ -26,7 +28,7 @@ CC = mpicc
 CFLAGS = -std=c99 -Wno-unused-result -DMAXATOMS=$(MAXATOMS) 
 OPTFLAGS = -g -O5
 INCLUDES = 
-C_LIB = -lm
+C_LIB = -lm -lstdc++
 
 ### If you need to specify include paths, library paths, or link flags
 ### for MPI, put them here.  Put both -L and -l switches into MPI_LIB.
@@ -46,7 +48,6 @@ NVCC_FLAGS += -gencode arch=compute_35,code=compute_35 --ptxas-options=-v -linei
 NVCC_FLAGS += -gencode arch=compute_20,code=compute_20 --ptxas-options=-v -lineinfo
 
 # set up nvcc compiler path
-#NVCC = $(CUDA_HOME)/nvcc
 NVCC = $(CUDA_HOME)/bin/nvcc
 
 # add precision flag for CUDA targets
