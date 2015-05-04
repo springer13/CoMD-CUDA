@@ -609,6 +609,7 @@ void bcastInterpolationObject(InterpolationObject** table)
       (*table)->n      = buf.n;
       (*table)->x0     = buf.x0;
       (*table)->invDx  = buf.invDx;
+      (*table)->invDxXx0 = buf.x0 * buf.invDx;
       (*table)->values = (real_t*)comdMalloc(sizeof(real_t) * (buf.n+3) );
       (*table)->values++;
    }

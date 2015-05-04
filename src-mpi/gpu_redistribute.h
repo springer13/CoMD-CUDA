@@ -124,6 +124,14 @@ int getBoxFromCoord(LinkCellGpu cells, real_t rx, real_t ry, real_t rz)
    return getBoxFromTuple(cells, ix, iy, iz);
 }
 
+/**
+ * Moves particles from one box into another box (if required).
+ *
+ * Particles that have left the box will be flagged with 0.
+ *
+ * \param[out] flags flags[ibox * MAXATOMS + i] corresponds to the ith atom in box ibox.
+ *                   The flag will be set to zero iff the particle has just left the box.
+ */
 template<int usePairlist>
 __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
 {
@@ -134,6 +142,7 @@ __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
   int iBox = sim.a_list.cells[tid];
 
   int iOff = iBox * MAXATOMS + iAtom;
+  assert(iOff < sim.boxes.nLocalBoxes * MAXATOMS && iOff >=0 );
 
   int jBox = getBoxFromCoord(cells, sim.atoms.r.x[iOff], sim.atoms.r.y[iOff], sim.atoms.r.z[iOff]);
   
@@ -142,9 +151,10 @@ __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
     int jAtom = atomicAdd(&sim.boxes.nAtoms[jBox], 1);
     assert(jAtom < MAXATOMS);
     int jOff = jBox * MAXATOMS + jAtom;
+    assert(jOff < sim.boxes.nTotalBoxes * MAXATOMS && jOff >=0 );
     
     // flag set/unset   
-    flags[jOff] = tid+1;
+    flags[jOff] = tid+1; //TODO: Why do we set this value to tid+1, wouldn't '1' suffice? (ask Nikolai)
     flags[iOff] = 0;
 
     // copy over the atoms data
@@ -169,6 +179,15 @@ __global__ void UpdateLinkCells(SimGpu sim, LinkCellGpu cells, int *flags)
     flags[iOff] = tid+1;
 }
 
+/**
+ * Compacts the Atoms per cell such that the position of atoms which have left the box
+ * will be overwritten by new atoms which have just entered the same cell.
+ *
+ * E.g.: Let 'x' denote a particle which remained in the same box,
+ * '0' denotes a particle that has left the box and 'y' represents a new particle of this
+ *  box.
+ * A box (xx0xxxy) would be compacted to: (xxxxy)
+ */
 // TODO: improve parallelism, currently it's one thread per cell!
 template <int usePairlist>
 __global__ void CompactAtoms(SimGpu sim, int num_cells, int *flags)
@@ -359,6 +378,7 @@ __global__ void LoadAtomsBufferPacked(AtomMsgSoA compactAtoms, int *cellIDs, Sim
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   int iCell = tid / MAXATOMS;
   int iAtom = tid % MAXATOMS;
+  assert(iCell < sim_gpu.boxes.nLocalBoxes + 1 && iCell >= 0);
 
   int iBox = cellIDs[iCell];
   int ii = iBox * MAXATOMS + iAtom;
@@ -484,6 +504,7 @@ void computeOffsets(int nlUpdateRequired, SimFlat* sim,
      computeOffsetsNoUpdateReq<<<grid, block, 0, stream>>>(d_iOffset, nBuf, sim->gpu.boxes.nAtoms, sim->gpu.d_hashTable);
      sim->gpu.d_hashTable.nEntriesGet += nBuf;
   }
+  CUDA_GET_LAST_ERROR
 }
 
 __global__ void UnloadAtomsBufferPacked(vec_t r, vec_t p, int* type, int* gid, int nBuf, AtomsGpu atoms, int* iOffsets)

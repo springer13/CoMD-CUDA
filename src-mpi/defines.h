@@ -32,7 +32,7 @@
 #define CTA_CELL_CTA		128
 
 // NOTE: the following is tuned for GK110
-#ifdef DOUBLE
+#ifdef COMD_DOUBLE
 #define THREAD_ATOM_ACTIVE_CTAS 	10	// 62%
 #define WARP_ATOM_ACTIVE_CTAS 		12	// 75%
 #define CTA_CELL_ACTIVE_CTAS 		10	// 62%

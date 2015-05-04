@@ -60,6 +60,7 @@ void interpolate(InterpolationObjectGpu table, real_t r, real_t &f, real_t &df)
    real_t ri = floor(r);
    
    int ii = (int)ri;
+   assert(ii < table.n );
 
    // reset r to fractional distance
    r = r - ri;

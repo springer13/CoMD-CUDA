@@ -43,6 +43,11 @@
   }
 #endif
 
+void cudaCopyDtH(void* dst, const void* src, int size)
+{
+   cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost);
+}
+
 void SetupGpu(int deviceId)
 {
   CUDA_CHECK(cudaSetDevice(deviceId));
