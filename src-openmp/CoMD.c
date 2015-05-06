@@ -21,6 +21,8 @@
 ///
 /// Click on the links below to browse the CoMD documentation.
 ///
+/// \subpage pg_openmp_specifics
+///
 /// \subpage pg_md_basics
 ///
 /// \subpage pg_building_comd
@@ -42,13 +44,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <unistd.h>
 #include <assert.h>
 
 #include "CoMDTypes.h"
 #include "decomposition.h"
 #include "linkCells.h"
-#include "defines.h"
-#include "neighborList.h"
 #include "eam.h"
 #include "ljForce.h"
 #include "initAtoms.h"
@@ -59,8 +61,6 @@
 #include "mycommand.h"
 #include "timestep.h"
 #include "constants.h"
-
-#include "gpu_utility.h"
 
 #define REDIRECT_OUTPUT 0
 #define   MIN(A,B) ((A) < (B) ? (A) : (B))
@@ -82,6 +82,7 @@ static void printThings(SimFlat* s, int iStep, double elapsedTime);
 static void printSimulationDataYaml(FILE* file, SimFlat* s);
 static void sanityChecks(Command cmd, double cutoff, double latticeConst, char latticeType[8]);
 
+
 int main(int argc, char** argv)
 {
    // Prolog
@@ -97,24 +98,11 @@ int main(int argc, char** argv)
    printCmdYaml(yamlFile, &cmd);
    printCmdYaml(screenOut, &cmd);
 
-   // select device, print info, etc.
-#ifdef DO_MPI
-   // get number of gpus on current node
-   int numGpus;
-   cudaGetDeviceCount(&numGpus);
-
-   // set active device (assuming homogenous config)
-   int deviceId = getMyRank() % numGpus;
-   SetupGpu(deviceId);
-#else
-   SetupGpu(0);
-#endif
-
    SimFlat* sim = initSimulation(cmd);
    printSimulationDataYaml(yamlFile, sim);
    printSimulationDataYaml(screenOut, sim);
 
-   Validate* validate = initValidate(sim); // atom counts, energy	   
+   Validate* validate = initValidate(sim); // atom counts, energy
    timestampBarrier("Initialization Finished\n");
 
    timestampBarrier("Starting simulation\n");
@@ -135,10 +123,7 @@ int main(int argc, char** argv)
       startTimer(timestepTimer);
       timestep(sim, printRate, sim->dt);
       stopTimer(timestepTimer);
-#if 0
-      // analyze input distribution, note this is done on CPU (slow)
-      AnalyzeInput(sim, iStep);
-#endif     
+
       iStep += printRate;
    }
    profileStop(loopTimer);
@@ -161,9 +146,6 @@ int main(int argc, char** argv)
    timestampBarrier("CoMD Ending\n");
    destroyParallel();
 
-   // for profiler
-   cudaDeviceReset();
-
    return 0;
 }
 
@@ -180,7 +162,7 @@ int main(int argc, char** argv)
 /// must be initialized before the atoms.
 SimFlat* initSimulation(Command cmd)
 {
-   SimFlat* sim = (SimFlat*)comdMalloc(sizeof(SimFlat));
+   SimFlat* sim = comdMalloc(sizeof(SimFlat));
    sim->nSteps = cmd.nSteps;
    sim->printRate = cmd.printRate;
    sim->dt = cmd.dt;
@@ -190,25 +172,8 @@ SimFlat* initSimulation(Command cmd)
    sim->ePotential = 0.0;
    sim->eKinetic = 0.0;
    sim->atomExchange = NULL;
-   sim->gpuAsync = cmd.gpuAsync;
-   sim->gpuProfile = cmd.gpuProfile;
-  
-   // if profile mode enabled: force 0 steps and turn async off
-   if (sim->gpuProfile) { 
-     sim->nSteps = 0;
-   }
 
-   if (!strcmp(cmd.method, "thread_atom")) sim->method = THREAD_ATOM;
-   else if (!strcmp(cmd.method, "warp_atom")) sim->method = WARP_ATOM;
-   else if (!strcmp(cmd.method, "warp_atom_nl")) sim->method = WARP_ATOM_NL;
-   else if (!strcmp(cmd.method, "cta_cell")) sim->method = CTA_CELL;
-   else if (!strcmp(cmd.method, "thread_atom_nl")) sim->method = THREAD_ATOM_NL;
-   else if (!strcmp(cmd.method, "cpu_nl")) sim->method = CPU_NL;
-   else {printf("Error: You have to specify a valid method: -m [thread_atom,thread_atom_nl,warp_atom,warp_atom_nl,cta_cell,cpu_nl]\n"); exit(-1);}
-
-   int useNL = (sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL || sim->method == CPU_NL)? 1 : 0;
    sim->pot = initPotential(cmd.doeam, cmd.potDir, cmd.potName, cmd.potType);
-
    real_t latticeConstant = cmd.lat;
    if (cmd.lat < 0.0)
       latticeConstant = sim->pot->lat;
@@ -218,7 +183,7 @@ SimFlat* initSimulation(Command cmd)
 
    sim->species = initSpecies(sim->pot);
 
-   real3_old globalExtent;
+   real3 globalExtent;
    globalExtent[0] = cmd.nx * latticeConstant;
    globalExtent[1] = cmd.ny * latticeConstant;
    globalExtent[2] = cmd.nz * latticeConstant;
@@ -226,81 +191,27 @@ SimFlat* initSimulation(Command cmd)
    sim->domain = initDecomposition(
       cmd.xproc, cmd.yproc, cmd.zproc, globalExtent);
 
-   sim->usePairlist = cmd.usePairlist;
-   if(sim->usePairlist)
-   {
-       sim->gpu.atoms.neighborList.forceRebuildFlag = 1;
-   }
-   sim->gpu.usePairlist = sim->usePairlist;
-
-   real_t skinDistance;
-   if(useNL || sim->usePairlist){
-          skinDistance = sim->pot->cutoff * cmd.relativeSkinDistance; 
-          if (printRank())
-                  printf("Skin-Distance: %f\n",skinDistance);
-   } else
-          skinDistance = 0.0;
-   sim->skinDistance = skinDistance;
-   if(sim->usePairlist)
-       sim->gpu.atoms.neighborList.skinDistanceHalf2 = skinDistance*skinDistance/4;
-   sim->boxes = initLinkCells(sim->domain, sim->pot->cutoff + skinDistance, cmd.doHilbert);
-   sim->atoms = initAtoms(sim->boxes, skinDistance);
-
-   sim->ljInterpolation = cmd.ljInterpolation;
-   sim->spline = cmd.spline;
+   sim->boxes = initLinkCells(sim->domain, sim->pot->cutoff);
+   sim->atoms = initAtoms(sim->boxes);
 
    // create lattice with desired temperature and displacement.
    createFccLattice(cmd.nx, cmd.ny, cmd.nz, latticeConstant, sim);
    setTemperature(sim, cmd.temperature);
    randomDisplacements(sim, cmd.initialDelta);
 
-   // set atoms exchange function
    sim->atomExchange = initAtomHaloExchange(sim->domain, sim->boxes);
-    if(!cmd.doeam)
-    {
-        SetBoundaryCells(sim, sim->atomExchange);
-    }
-   // set forces exchange function
-   if (cmd.doeam && sim->method < CPU_NL) {
-     EamPotential* pot = (EamPotential*) sim->pot;
-     pot->forceExchange = initForceHaloExchange(sim->domain, sim->boxes,sim->method < CPU_NL);
-     // init boundary cell lists
-     SetBoundaryCells(sim, pot->forceExchange);
-   }
-   if((sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL) && !cmd.doeam){
-           if (printRank())
-                   printf("Gpu neighborlist implementation is currently only supported for the eam potential.\n");
-           exit(-1);
-   }
- 
-   // setup GPU //TODO: refactor: this should become a init function which allocates everything related to sim->gpu (i.e. break allocateGPU() up into several functions)
-   AllocateGpu(sim, cmd.doeam, skinDistance); 
-   CopyDataToGpu(sim, cmd.doeam);
 
    // Forces must be computed before we call the time stepper.
-   if (!sim->gpuProfile) {
-     startTimer(redistributeTimer);
-     redistributeAtoms(sim);
-     stopTimer(redistributeTimer); 
-   }
-
-   if(useNL){
-      buildNeighborList(sim,0);
-   }
+   startTimer(redistributeTimer);
+   redistributeAtoms(sim);
+   stopTimer(redistributeTimer);
 
    startTimer(computeForceTimer);
    computeForce(sim);
    stopTimer(computeForceTimer);
 
-   if(sim->method < CPU_NL)
-      kineticEnergyGpu(sim);
-   else
-      kineticEnergy(sim);
+   kineticEnergy(sim);
 
-   if(sim->gpuAsync != 0 && useNL){
-           printf("Async Neighborlist not supported yet!\n");
-           exit(-1);
-   }
    return sim;
 }
 
@@ -311,9 +222,6 @@ void destroySimulation(SimFlat** ps)
 
    SimFlat* s = *ps;
    if ( ! s ) return;
-
-   // free GPU data
-   DestroyGpu(s);
 
    BasePotential* pot = s->pot;
    if ( pot) pot->destroy(&pot);
@@ -361,7 +269,7 @@ BasePotential* initPotential(
 
 SpeciesData* initSpecies(BasePotential* pot)
 {
-   SpeciesData* species = (SpeciesData*)comdMalloc(sizeof(SpeciesData));
+   SpeciesData* species = comdMalloc(sizeof(SpeciesData));
 
    strcpy(species->name, pot->name);
    species->atomicNo = pot->atomicNo;
@@ -373,7 +281,7 @@ SpeciesData* initSpecies(BasePotential* pot)
 Validate* initValidate(SimFlat* sim)
 {
    sumAtoms(sim);
-   Validate* val = (Validate*)comdMalloc(sizeof(Validate));
+   Validate* val = comdMalloc(sizeof(Validate));
    val->eTot0 = (sim->ePotential + sim->eKinetic) / sim->atoms->nGlobal;
    val->nAtoms0 = sim->atoms->nGlobal;
 
@@ -419,9 +327,6 @@ void validateResult(const Validate* val, SimFlat* sim)
 
 void sumAtoms(SimFlat* s)
 {
-   // update num atoms from GPU
-//   cudaMemcpy(s->boxes->nAtoms, s->gpu.num_atoms, s->boxes->nLocalBoxes * sizeof(int), cudaMemcpyDeviceToHost);
-
    // sum atoms across all processers
    s->atoms->nLocal = 0;
    for (int i = 0; i < s->boxes->nLocalBoxes; i++)
@@ -508,24 +413,6 @@ void printSimulationDataYaml(FILE* file, SimFlat* s)
    fprintf(file,"Potential data: \n");
    s->pot->print(file, s->pot);
    
-   // Memory footprint diagnostics
-   int perAtomSize = 10*sizeof(real_t)+2*sizeof(int);
-   float mbPerAtom = perAtomSize/1024/1024;
-   float totalMemLocal = (float)(perAtomSize*s->atoms->nLocal)/1024/1024;
-   float totalMemGlobal = (float)(perAtomSize*s->atoms->nGlobal)/1024/1024;
-
-   int nLocalBoxes = s->boxes->gridSize[0]*s->boxes->gridSize[1]*s->boxes->gridSize[2];
-   int nTotalBoxes = (s->boxes->gridSize[0]+2)*(s->boxes->gridSize[1]+2)*(s->boxes->gridSize[2]+2);
-   float paddedMemLocal = (float) nLocalBoxes*(perAtomSize*MAXATOMS)/1024/1024;
-   float paddedMemTotal = (float) nTotalBoxes*(perAtomSize*MAXATOMS)/1024/1024;
-
-   printSeparator(file);
-   fprintf(file,"Memory data: \n");
-   fprintf(file, "  Intrinsic atom footprint = %4d B/atom \n", perAtomSize);
-   fprintf(file, "  Total atom footprint     = %7.3f MB (%6.2f MB/node)\n", totalMemGlobal, totalMemLocal);
-   fprintf(file, "  Link cell atom footprint = %7.3f MB/node\n", paddedMemLocal);
-   fprintf(file, "  Link cell atom footprint = %7.3f MB/node (including halo cell data\n", paddedMemTotal);
-
    fflush(file);      
 }
 

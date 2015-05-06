@@ -6,7 +6,7 @@
 
 #include <stdio.h>
 
-/// Provide access to the YAML file in other compilation units.
+/// Provide access to the YAML file in other compliation units.
 extern FILE* yamlFile;
 
 void yamlBegin(void);

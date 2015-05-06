@@ -6,10 +6,19 @@
 #include <stdio.h>
 
 /// Timer handles
-enum TimerHandle{totalTimer, loopTimer, timestepTimer,
-                 positionTimer, velocityTimer,  neighborListBuildTimer, redistributeTimer,
-                 atomHaloTimer, computeForceTimer, eamHaloTimer,
-                 commHaloTimer, commReduceTimer, numberOfTimers};
+enum TimerHandle{
+   totalTimer, 
+   loopTimer, 
+   timestepTimer, 
+   positionTimer, 
+   velocityTimer,  
+   redistributeTimer, 
+   atomHaloTimer, 
+   computeForceTimer, 
+   eamHaloTimer, 
+   commHaloTimer, 
+   commReduceTimer, 
+   numberOfTimers};
 
 /// Use the startTimer and stopTimer macros for timers in code regions
 /// that may be performance sensitive.  These can be compiled away by
@@ -27,13 +36,11 @@ enum TimerHandle{totalTimer, loopTimer, timestepTimer,
 ///
 #ifndef NTIMING
 #define startTimer(handle)    \
-   /*cudaDeviceSynchronize();*/   \
    do                         \
 {                          \
    profileStart(handle);   \
 } while(0)
 #define stopTimer(handle)     \
-   /*cudaDeviceSynchronize();*/   \
    do                         \
 {                          \
    profileStop(handle);    \

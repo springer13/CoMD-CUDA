@@ -19,3 +19,6 @@
 # Doxygen directories
 src-mpi/html
 src-mpi/latex
+
+# Output files
+*.yaml

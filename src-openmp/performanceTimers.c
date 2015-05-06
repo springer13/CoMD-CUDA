@@ -29,16 +29,10 @@
 #include "performanceTimers.h"
 
 #include <stdio.h>
-
-#if defined(_WIN32) || defined(_WIN64) 
-#include <windows.h>
-#else
 #include <sys/time.h>
-#include <inttypes.h>
-#endif
-
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <math.h>
 
 #include "performanceTimers.h"
@@ -58,7 +52,6 @@ char* timerName[numberOfTimers] = {
    "timestep",
    "  position",
    "  velocity",
-   "  neighborList",
    "  redistribute",
    "    atomHalo",
    "  force",
@@ -143,21 +136,12 @@ void printPerformanceResults(int nGlobalAtoms, int printRate)
    {
       double totalTime = perfTimer[ii].total*tick;
       if (perfTimer[ii].count > 0)
-#if defined(_WIN32) || defined(_WIN64) 
-		  fprintf(screenOut, "%-16s%12llu     %8.4f      %8.4f    %8.2f\n", 
-                 timerName[ii],
-                 perfTimer[ii].count,
-                 totalTime/(double)perfTimer[ii].count,
-                 totalTime,
-                 totalTime/loopTime*100.0);
-#else
          fprintf(screenOut, "%-16s%12"PRIu64"     %8.4f      %8.4f    %8.2f\n", 
                  timerName[ii],
                  perfTimer[ii].count,
                  totalTime/(double)perfTimer[ii].count,
                  totalTime,
                  totalTime/loopTime*100.0);
-#endif
    }
 
    fprintf(screenOut, "\nTiming Statistics Across %d Ranks:\n", getNRanks());
@@ -211,11 +195,7 @@ void printPerformanceResultsYaml(FILE* file)
       {
          double totalTime = perfTimer[ii].total*tick;
          fprintf(file, "  Timer: %s\n", timerName[ii]);
-#if defined(_WIN32) || defined(_WIN64) 
-		 fprintf(file, "    CallCount: %llu\n", perfTimer[ii].count); 
-#else
-         fprintf(file, "    CallCount: %"PRIu64"\n", perfTimer[ii].count); 
-#endif
+         fprintf(file, "    CallCount:  %"PRIu64"\n", perfTimer[ii].count); 
          fprintf(file, "    AvgPerCall: %8.4f\n", totalTime/(double)perfTimer[ii].count);
          fprintf(file, "    Total:      %8.4f\n", totalTime);
          fprintf(file, "    PercentLoop: %8.2f\n", totalTime/loopTime*100);
@@ -262,18 +242,11 @@ void printPerformanceResultsYaml(FILE* file)
 /// units of this function and seconds.
 static uint64_t getTime(void)
 {
-   uint64_t t = 0;
-#if defined(_WIN32) || defined(_WIN64)
-   LARGE_INTEGER freq;
-   LARGE_INTEGER count;
-   QueryPerformanceFrequency(&freq);
-   QueryPerformanceCounter(&count);
-   t = (double)count.QuadPart / (double)freq.QuadPart;
-#else
    struct timeval ptime;
+   uint64_t t = 0;
    gettimeofday(&ptime, (struct timezone *)NULL);
    t = ((uint64_t)1000000)*(uint64_t)ptime.tv_sec + (uint64_t)ptime.tv_usec;
-#endif
+
    return t; 
 }
 
