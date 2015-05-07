@@ -35,6 +35,9 @@ C_LIB = -lm -lstdc++
 MPI_LIB =
 MPI_INCLUDE = #use those includes shown by 'mpicc --show'
 
+### Path to your CUB main directory (download at: nvlabs.github.io/cub/index.html)
+CUB_DIR = 
+
 ### A place to specify any other include or library switches your
 ### platform requires.
 OTHER_LIB = -L$(CUDA_HOME)/lib64 -lcudart
@@ -42,7 +45,7 @@ OTHER_INCLUDE = -I$(CUDA_HOME)/include
 
 ### CUDA targets
 
-NVCC_FLAGS += -DMAXATOMS=$(MAXATOMS)
+NVCC_FLAGS += -DMAXATOMS=$(MAXATOMS) ${CUB_DIR}
 # support sm20 & sm35
 NVCC_FLAGS += -gencode arch=compute_35,code=compute_35 --ptxas-options=-v -lineinfo
 NVCC_FLAGS += -gencode arch=compute_20,code=compute_20 --ptxas-options=-v -lineinfo
